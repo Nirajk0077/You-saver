@@ -26,6 +26,26 @@ user_settings = {}
 # user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'quality': str} }
 user_data = {}
 
+async def send_log(client: Client, user, action: str, details: str = ""):
+    """
+    Sends a log message to the configured LOG_CHANNEL.
+    """
+    if not Config.LOG_CHANNEL:
+        return
+
+    log_text = (
+        f"🔔 **Bot Activity Log**\n\n"
+        f"👤 **User:** {user.mention} (`{user.id}`)\n"
+        f"🎬 **Action:** {action}\n"
+    )
+    if details:
+        log_text += f"📝 **Details:** {details}"
+
+    try:
+        await client.send_message(Config.LOG_CHANNEL, log_text, disable_web_page_preview=True)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
+
 def get_user_setting(user_id, key, default):
     if user_id not in user_settings:
         user_settings[user_id] = {}
@@ -132,6 +152,9 @@ async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
     leech_status = "✅ ON" if get_user_setting(user_id, 'leech', False) else "❌ OFF"
     
+    # Log start command
+    await send_log(client, message.from_user, "Start Command", "User started the bot.")
+
     text = (
         f"👋 Hello {message.from_user.mention}!\n\n"
         "I am a YouTube Downloader Bot.\n"
@@ -147,6 +170,7 @@ async def start_handler(client: Client, message: Message):
 
 @app.on_message(filters.command("set_cookies") & filters.private)
 async def set_cookies_command(client: Client, message: Message):
+    await send_log(client, message.from_user, "Set Cookies Command", "User initiated cookie setup.")
     await message.reply_text(
         "🍪 **Set Cookies**\n\n"
         "Please send your cookies in one of the following formats:\n"
@@ -193,6 +217,9 @@ async def callback_handler(client: Client, query: CallbackQuery):
         current = get_user_setting(user_id, 'leech', False)
         set_user_setting(user_id, 'leech', not current)
         
+        # Log setting change
+        await send_log(client, query.from_user, "Leech Mode Toggle", f"Set to {'ON' if not current else 'OFF'}")
+
         # Refresh settings menu
         is_leech = not current
         status_text = "✅ ON" if is_leech else "❌ OFF"
@@ -226,6 +253,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
         
         if not is_leech:
             await query.message.delete()
+            await send_log(client, query.from_user, "Download Started (Direct)", f"URL: {url}\nQuality: {quality}p")
             await process_download(client, query.message, user_data[user_id])
             # Cleanup
             if user_id in user_data:
@@ -233,6 +261,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
         else:
             # Leech Mode: Fetch info and show menu
             await query.message.edit_text("🔎 Fetching video info...")
+            await send_log(client, query.from_user, "Leech Mode Active", f"URL: {url}\nQuality: {quality}p")
             try:
                 loop = asyncio.get_running_loop()
                 info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url))
@@ -268,6 +297,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
             return
         
         await query.message.delete()
+        await send_log(client, query.from_user, "Download Started (Leech)", f"URL: {user_data[user_id]['url']}")
         await process_download(client, query.message, user_data[user_id])
         # Cleanup state
         if user_id in user_data:
@@ -303,6 +333,8 @@ async def youtube_handler(client: Client, message: Message):
         'quality': '1080' # default fallback
     }
     
+    await send_log(client, message.from_user, "Link Received", f"URL: {url}")
+
     # Ask for Quality
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("1080p", callback_data="set_quality_1080"),
@@ -327,6 +359,7 @@ async def text_handler(client: Client, message: Message):
                 f.write(netscape_content)
             
             await message.reply_text("✅ Cookies saved successfully!")
+            await send_log(client, message.from_user, "Cookies Updated", "User uploaded cookies via text.")
             if user_id in user_data:
                 del user_data[user_id]
         return
@@ -354,6 +387,7 @@ async def document_handler(client: Client, message: Message):
                 f.write(netscape_content)
             
             await message.reply_text("✅ Cookies file saved successfully!")
+            await send_log(client, message.from_user, "Cookies Updated", "User uploaded cookies via file.")
         except Exception as e:
              await message.reply_text(f"❌ Error reading file: {e}")
         finally:
@@ -432,6 +466,7 @@ async def process_download(client: Client, message: Message, data: dict):
 
         if not video_files:
             await status_msg.edit_text("❌ Error: Could not find downloaded video file.")
+            await send_log(client, user, "Download Failed", "Could not find video file after download.")
             return
         
         video_path = video_files[0]
@@ -456,6 +491,7 @@ async def process_download(client: Client, message: Message, data: dict):
         )
         
         await status_msg.delete()
+        await send_log(client, user, "Upload Completed", f"Video: {final_title}")
         
         # Delete the user's original link/message
         if original_msg_id:
@@ -467,6 +503,7 @@ async def process_download(client: Client, message: Message, data: dict):
 
     except Exception as e:
         await status_msg.edit_text(f"❌ Error: {str(e)}")
+        await send_log(client, user, "Error", f"Process failed: {str(e)}")
     
     finally:
         # Cleanup download folder
