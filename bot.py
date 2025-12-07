@@ -595,27 +595,32 @@ async def api_info_handler(request):
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
 
-async def start_web_server():
-    server = web.Application()
-    server.router.add_get("/", web_handler)
-    server.router.add_get("/api/info", api_info_handler)
-    runner = web.AppRunner(server)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"Web server started on port {port}")
+async def on_startup(app_runner):
+    print("Starting Telegram Bot...")
+    await app.start()
 
-async def main():
-    print("Bot is starting...")
+async def on_cleanup(app_runner):
+    print("Stopping Telegram Bot...")
+    await app.stop()
+
+def main():
+    print("Starting Web Server...")
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
     
-    # Start bot and web server
-    await app.start()
-    await start_web_server()
-    await idle()
-    await app.stop()
+    # Create the web application
+    web_app = web.Application()
+    web_app.router.add_get("/", web_handler)
+    web_app.router.add_get("/api/info", api_info_handler)
+    
+    # Register startup/cleanup hooks
+    web_app.on_startup.append(on_startup)
+    web_app.on_cleanup.append(on_cleanup)
+    
+    # Run the web application
+    # This handles the main loop
+    port = int(os.environ.get("PORT", 8000))
+    web.run_app(web_app, port=port)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
