@@ -60,26 +60,39 @@ def progress_hook(d):
     if d['status'] == 'finished':
         print('Download finished, now converting ...')
 
-def download_video_sync(url, output_path, quality, writethumbnail=True):
+def download_media_sync(url, output_path, quality, writethumbnail=True, mode='video'):
     """
     Synchronous wrapper for yt-dlp download to be run in an executor.
-    Quality should be '1080', '720', '480', or '360'.
+    mode: 'video' or 'audio'
+    quality: '1080', '720' etc for video; '128', '320' etc for audio.
     """
-    # Default to 1080 if invalid
-    if quality not in ['1080', '720', '480', '360']:
-        quality = '1080'
-    
-    format_str = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
-    
     ydl_opts = {
-        'format': format_str,
         'outtmpl': output_path,
         'writethumbnail': writethumbnail,
-        'merge_output_format': 'mp4',
         'quiet': True,
         'progress_hooks': [progress_hook],
         'noplaylist': True,
     }
+
+    if mode == 'audio':
+        ydl_opts.update({
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': quality,
+            }],
+        })
+    else:
+        # Default to 1080 if invalid video quality
+        if quality not in ['1080', '720', '480', '360']:
+            quality = '1080'
+        
+        format_str = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+        ydl_opts.update({
+            'format': format_str,
+            'merge_output_format': 'mp4',
+        })
 
     if os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
@@ -158,7 +171,7 @@ async def start_handler(client: Client, message: Message):
     text = (
         f"👋 Hello {message.from_user.mention}!\n\n"
         "I am a YouTube Downloader Bot.\n"
-        "Send me a YouTube link to download video.\n\n"
+        "Send me a YouTube link to download video or audio.\n\n"
         f"**Current Mode:**\nLeech Mode: {leech_status}"
     )
     
@@ -238,10 +251,42 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
     elif data == "close_settings":
         await query.message.delete()
+
+    elif data == "mp3_menu":
+        # Show MP3 Quality Options
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Fast 128k", callback_data="set_audio_128")],
+            [InlineKeyboardButton("Classic 70k", callback_data="set_audio_70"),
+             InlineKeyboardButton("Classic 128k", callback_data="set_audio_128")],
+            [InlineKeyboardButton("Classic 160k", callback_data="set_audio_160"),
+             InlineKeyboardButton("Classic 320k", callback_data="set_audio_320")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_quality")]
+        ])
+        await query.message.edit_text("🎵 **Select Audio Quality:**", reply_markup=buttons)
+
+    elif data == "back_to_quality":
+        # Return to main quality menu
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("1080p", callback_data="set_quality_1080"),
+             InlineKeyboardButton("720p", callback_data="set_quality_720")],
+            [InlineKeyboardButton("480p", callback_data="set_quality_480"),
+             InlineKeyboardButton("360p", callback_data="set_quality_360")],
+            [InlineKeyboardButton("🎵 MP3 / Audio", callback_data="mp3_menu")]
+        ])
+        await query.message.edit_text("📹 **Select Video Quality:**", reply_markup=buttons)
         
-    elif data.startswith("set_quality_"):
-        # Quality selected, proceed
-        quality = data.split("_")[2]
+    elif data.startswith("set_quality_") or data.startswith("set_audio_"):
+        # Quality selected (Video or Audio)
+        if data.startswith("set_quality_"):
+            quality = data.split("_")[2]
+            mode = 'video'
+        else:
+            quality = data.split("_")[2]
+            mode = 'audio'
+            # Store special 'audio_128' type string in user_data quality field
+            # Actually, let's store "audio_128" in 'quality' and parse it later
+            quality = f"audio_{quality}"
+
         user_data[user_id]['quality'] = quality
         
         url = user_data[user_id].get('url')
@@ -251,17 +296,19 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
         is_leech = get_user_setting(user_id, 'leech', False)
         
+        display_quality = quality.replace("audio_", "MP3 ") if "audio" in quality else f"{quality}p"
+
         if not is_leech:
             await query.message.delete()
-            await send_log(client, query.from_user, "Download Started (Direct)", f"URL: {url}\nQuality: {quality}p")
+            await send_log(client, query.from_user, "Download Started (Direct)", f"URL: {url}\nQuality: {display_quality}")
             await process_download(client, query.message, user_data[user_id])
             # Cleanup
             if user_id in user_data:
                 del user_data[user_id]
         else:
             # Leech Mode: Fetch info and show menu
-            await query.message.edit_text("🔎 Fetching video info...")
-            await send_log(client, query.from_user, "Leech Mode Active", f"URL: {url}\nQuality: {quality}p")
+            await query.message.edit_text("🔎 Fetching info...")
+            await send_log(client, query.from_user, "Leech Mode Active", f"URL: {url}\nQuality: {display_quality}")
             try:
                 loop = asyncio.get_running_loop()
                 info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url))
@@ -270,7 +317,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 user_data[user_id]['title'] = title
                 user_data[user_id]['state'] = 'idle'
                 
-                text = f"📹 **Video Found**\n\n**Title:** `{title}`\n**Quality:** {quality}p\n\nSelect an action:"
+                text = f"📹 **Media Found**\n\n**Title:** `{title}`\n**Quality:** {display_quality}\n\nSelect an action:"
                 
                 buttons = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✏️ Rename", callback_data="leech_rename"),
@@ -340,7 +387,8 @@ async def youtube_handler(client: Client, message: Message):
         [InlineKeyboardButton("1080p", callback_data="set_quality_1080"),
          InlineKeyboardButton("720p", callback_data="set_quality_720")],
         [InlineKeyboardButton("480p", callback_data="set_quality_480"),
-         InlineKeyboardButton("360p", callback_data="set_quality_360")]
+         InlineKeyboardButton("360p", callback_data="set_quality_360")],
+        [InlineKeyboardButton("🎵 MP3 / Audio", callback_data="mp3_menu")]
     ])
     
     await message.reply_text("📹 **Select Video Quality:**", reply_markup=buttons)
@@ -420,8 +468,17 @@ async def process_download(client: Client, message: Message, data: dict):
     user = data.get('user', message.from_user) # Fallback to message.from_user if not in data
     quality = data.get('quality', '1080')
 
+    mode = 'video'
+    target_quality = quality
+    if quality.startswith('audio_'):
+        mode = 'audio'
+        target_quality = quality.split('_')[1]
+        display_text = f"MP3 {target_quality}k"
+    else:
+        display_text = f"{quality}p"
+
     # Send processing message
-    status_msg = await client.send_message(message.chat.id, f"⬇️ Downloading video ({quality}p)...")
+    status_msg = await client.send_message(message.chat.id, f"⬇️ Downloading {mode} ({display_text})...")
     
     timestamp = int(time.time())
     
@@ -435,13 +492,10 @@ async def process_download(client: Client, message: Message, data: dict):
     
     try:
         loop = asyncio.get_running_loop()
-        # If custom thumb is provided, we might not need yt-dlp to write one, 
-        # but it's safer to let it write one as backup if we don't use it.
-        # However, if we have a custom thumb, we will pass it explicitly to send_video.
         
         info = await loop.run_in_executor(
             None, 
-            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=True)
+            functools.partial(download_media_sync, url, output_template, target_quality, writethumbnail=True, mode=mode)
         )
         
         title = info.get('title', 'Unknown Title')
@@ -450,7 +504,6 @@ async def process_download(client: Client, message: Message, data: dict):
         height = info.get('height', 0)
         
         files_path = f"downloads/{timestamp}/"
-        video_files = glob.glob(f"{files_path}*.mp4")
         
         # Determine which thumbnail to use
         # 1. Custom thumb if provided
@@ -463,35 +516,51 @@ async def process_download(client: Client, message: Message, data: dict):
             thumb_files = glob.glob(f"{files_path}*.jpg") + glob.glob(f"{files_path}*.webp") + glob.glob(f"{files_path}*.png")
             if thumb_files:
                 thumb_to_use = thumb_files[0]
+        
+        # Find the uploaded file
+        if mode == 'audio':
+             media_files = glob.glob(f"{files_path}*.mp3")
+        else:
+             media_files = glob.glob(f"{files_path}*.mp4")
 
-        if not video_files:
-            await status_msg.edit_text("❌ Error: Could not find downloaded video file.")
-            await send_log(client, user, "Download Failed", "Could not find video file after download.")
+        if not media_files:
+            await status_msg.edit_text(f"❌ Error: Could not find downloaded {mode} file.")
+            await send_log(client, user, "Download Failed", "Could not find file after download.")
             return
         
-        video_path = video_files[0]
+        media_path = media_files[0]
         
         # Construct Caption
         final_title = custom_name if custom_name else title
-        # Use user.mention for a proper clickable link
         mention = user.mention if user else "Unknown"
-        caption = f"🎥 **{final_title}**\n**Quality:** {quality}p\n\n👤 **Requested by:** {mention}"
+        caption = f"🎥 **{final_title}**\n**Quality:** {display_text}\n\n👤 **Requested by:** {mention}"
         
         await status_msg.edit_text("⬆️ Uploading to Telegram...")
         
-        await client.send_video(
-            chat_id=message.chat.id,
-            video=video_path,
-            caption=caption,
-            duration=duration,
-            width=width,
-            height=height,
-            thumb=thumb_to_use,
-            supports_streaming=True
-        )
+        if mode == 'audio':
+            await client.send_audio(
+                chat_id=message.chat.id,
+                audio=media_path,
+                caption=caption,
+                duration=duration,
+                thumb=thumb_to_use,
+                title=final_title,
+                performer=info.get('uploader', 'Unknown')
+            )
+        else:
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=media_path,
+                caption=caption,
+                duration=duration,
+                width=width,
+                height=height,
+                thumb=thumb_to_use,
+                supports_streaming=True
+            )
         
         await status_msg.delete()
-        await send_log(client, user, "Upload Completed", f"Video: {final_title}")
+        await send_log(client, user, "Upload Completed", f"Media: {final_title} ({mode})")
         
         # Delete the user's original link/message
         if original_msg_id:
@@ -580,10 +649,8 @@ async def main():
         os.makedirs("downloads")
     
     # Start bot and web server
-    await app.start()
     await start_web_server()
     await idle()
-    await app.stop()
 
 if __name__ == "__main__":
     app.run(main())
