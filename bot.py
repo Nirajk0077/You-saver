@@ -649,8 +649,10 @@ async def main():
         os.makedirs("downloads")
     
     # Start bot and web server
+    await app.start()
     await start_web_server()
     await idle()
+    await app.stop()
 
 if __name__ == "__main__":
-    app.run(main())
+    asyncio.run(main())
