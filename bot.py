@@ -483,9 +483,53 @@ async def process_download(client: Client, message: Message, data: dict):
 async def web_handler(request):
     return web.Response(text="Bot is running")
 
+async def api_info_handler(request):
+    """
+    API Endpoint: /api/info?url=...
+    Returns JSON metadata for the given YouTube URL.
+    """
+    url = request.query.get('url')
+    if not url:
+        return web.json_response({'error': 'Missing url parameter'}, status=400)
+    
+    try:
+        loop = asyncio.get_running_loop()
+        # Use fetch_info_sync which reuses our cookies configuration
+        info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url))
+        
+        # Extract relevant fields
+        response_data = {
+            'title': info.get('title'),
+            'duration': info.get('duration'),
+            'thumbnail': info.get('thumbnail'),
+            'uploader': info.get('uploader'),
+            'view_count': info.get('view_count'),
+            'formats': []
+        }
+        
+        # Simplify formats for the API consumer
+        for f in info.get('formats', []):
+            # Only keep useful formats (e.g., mp4 with audio/video or specific resolutions)
+            # This is a raw dump of available streams.
+            response_data['formats'].append({
+                'format_id': f.get('format_id'),
+                'ext': f.get('ext'),
+                'resolution': f.get('resolution'),
+                'url': f.get('url'), # Note: might be IP locked
+                'filesize': f.get('filesize'),
+                'vcodec': f.get('vcodec'),
+                'acodec': f.get('acodec')
+            })
+            
+        return web.json_response(response_data)
+        
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
 async def start_web_server():
     server = web.Application()
     server.router.add_get("/", web_handler)
+    server.router.add_get("/api/info", api_info_handler)
     runner = web.AppRunner(server)
     await runner.setup()
     port = int(os.environ.get("PORT", 8000))
