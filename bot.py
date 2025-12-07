@@ -23,7 +23,7 @@ app = Client(
 # Global States
 # user_settings = { user_id: {'leech': bool} }
 user_settings = {}
-# user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int} }
+# user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'quality': str} }
 user_data = {}
 
 def get_user_setting(user_id, key, default):
@@ -40,12 +40,19 @@ def progress_hook(d):
     if d['status'] == 'finished':
         print('Download finished, now converting ...')
 
-def download_video_sync(url, output_path, writethumbnail=True):
+def download_video_sync(url, output_path, quality, writethumbnail=True):
     """
     Synchronous wrapper for yt-dlp download to be run in an executor.
+    Quality should be '1080', '720', '480', or '360'.
     """
+    # Default to 1080 if invalid
+    if quality not in ['1080', '720', '480', '360']:
+        quality = '1080'
+    
+    format_str = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+    
     ydl_opts = {
-        'format': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
+        'format': format_str,
         'outtmpl': output_path,
         'writethumbnail': writethumbnail,
         'merge_output_format': 'mp4',
@@ -128,7 +135,7 @@ async def start_handler(client: Client, message: Message):
     text = (
         f"👋 Hello {message.from_user.mention}!\n\n"
         "I am a YouTube Downloader Bot.\n"
-        "Send me a YouTube link to download video in 1080p.\n\n"
+        "Send me a YouTube link to download video.\n\n"
         f"**Current Mode:**\nLeech Mode: {leech_status}"
     )
     
@@ -205,6 +212,48 @@ async def callback_handler(client: Client, query: CallbackQuery):
     elif data == "close_settings":
         await query.message.delete()
         
+    elif data.startswith("set_quality_"):
+        # Quality selected, proceed
+        quality = data.split("_")[2]
+        user_data[user_id]['quality'] = quality
+        
+        url = user_data[user_id].get('url')
+        if not url:
+            await query.answer("Session expired.", show_alert=True)
+            return
+
+        is_leech = get_user_setting(user_id, 'leech', False)
+        
+        if not is_leech:
+            await query.message.delete()
+            await process_download(client, query.message, user_data[user_id])
+            # Cleanup
+            if user_id in user_data:
+                del user_data[user_id]
+        else:
+            # Leech Mode: Fetch info and show menu
+            await query.message.edit_text("🔎 Fetching video info...")
+            try:
+                loop = asyncio.get_running_loop()
+                info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url))
+                title = info.get('title', 'Unknown Title')
+                
+                user_data[user_id]['title'] = title
+                user_data[user_id]['state'] = 'idle'
+                
+                text = f"📹 **Video Found**\n\n**Title:** `{title}`\n**Quality:** {quality}p\n\nSelect an action:"
+                
+                buttons = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✏️ Rename", callback_data="leech_rename"),
+                     InlineKeyboardButton("🖼️ Set Thumbnail", callback_data="leech_thumb")],
+                    [InlineKeyboardButton("🚀 Upload Now", callback_data="leech_upload")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="leech_cancel")]
+                ])
+                
+                await query.message.edit_text(text, reply_markup=buttons)
+            except Exception as e:
+                 await query.message.edit_text(f"❌ Error fetching info: {str(e)}")
+
     elif data == "leech_rename":
         user_data[user_id]['state'] = 'waiting_rename'
         await query.message.reply_text("✏️ Send me the new filename (without extension):")
@@ -242,48 +291,27 @@ async def youtube_handler(client: Client, message: Message):
         return
     url = match.group(0)
 
-    # Check Leech Mode
-    is_leech = get_user_setting(user_id, 'leech', False)
+    # Store URL and setup state
+    user_data[user_id] = {
+        'state': 'waiting_quality',
+        'url': url,
+        'title': None,
+        'rename': None,
+        'thumb_path': None,
+        'original_message_id': message.id,
+        'user': message.from_user,
+        'quality': '1080' # default fallback
+    }
     
-    if not is_leech:
-        # Direct Download (Legacy Behavior)
-        # We pass message_id explicitly for consistent handling
-        data = {'url': url, 'original_message_id': message.id, 'user': message.from_user}
-        await process_download(client, message, data)
-        return
-
-    # Leech Mode Flow
-    status_msg = await message.reply_text("🔎 Fetching video info...")
+    # Ask for Quality
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("1080p", callback_data="set_quality_1080"),
+         InlineKeyboardButton("720p", callback_data="set_quality_720")],
+        [InlineKeyboardButton("480p", callback_data="set_quality_480"),
+         InlineKeyboardButton("360p", callback_data="set_quality_360")]
+    ])
     
-    try:
-        loop = asyncio.get_running_loop()
-        info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url))
-        title = info.get('title', 'Unknown Title')
-        
-        # Initialize User Data
-        user_data[user_id] = {
-            'state': 'idle',
-            'url': url,
-            'title': title,
-            'rename': None,
-            'thumb_path': None,
-            'original_message_id': message.id,
-            'user': message.from_user
-        }
-        
-        text = f"📹 **Video Found**\n\n**Title:** `{title}`\n\nSelect an action:"
-        
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Rename", callback_data="leech_rename"),
-             InlineKeyboardButton("🖼️ Set Thumbnail", callback_data="leech_thumb")],
-            [InlineKeyboardButton("🚀 Upload Now", callback_data="leech_upload")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="leech_cancel")]
-        ])
-        
-        await status_msg.edit_text(text, reply_markup=buttons)
-        
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Error fetching info: {str(e)}")
+    await message.reply_text("📹 **Select Video Quality:**", reply_markup=buttons)
 
 # Generic text handler (runs after specific handlers)
 @app.on_message(filters.text & filters.private)
@@ -356,9 +384,10 @@ async def process_download(client: Client, message: Message, data: dict):
     custom_thumb = data.get('thumb_path')
     original_msg_id = data.get('original_message_id')
     user = data.get('user', message.from_user) # Fallback to message.from_user if not in data
+    quality = data.get('quality', '1080')
 
     # Send processing message
-    status_msg = await client.send_message(message.chat.id, "⬇️ Downloading video (1080p)...")
+    status_msg = await client.send_message(message.chat.id, f"⬇️ Downloading video ({quality}p)...")
     
     timestamp = int(time.time())
     
@@ -378,7 +407,7 @@ async def process_download(client: Client, message: Message, data: dict):
         
         info = await loop.run_in_executor(
             None, 
-            functools.partial(download_video_sync, url, output_template, writethumbnail=True)
+            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=True)
         )
         
         title = info.get('title', 'Unknown Title')
@@ -411,7 +440,7 @@ async def process_download(client: Client, message: Message, data: dict):
         final_title = custom_name if custom_name else title
         # Use user.mention for a proper clickable link
         mention = user.mention if user else "Unknown"
-        caption = f"🎥 **{final_title}**\n\n👤 **Requested by:** {mention}"
+        caption = f"🎥 **{final_title}**\n**Quality:** {quality}p\n\n👤 **Requested by:** {mention}"
         
         await status_msg.edit_text("⬆️ Uploading to Telegram...")
         
