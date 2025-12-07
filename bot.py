@@ -26,6 +26,10 @@ user_settings = {}
 # user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'quality': str} }
 user_data = {}
 
+# Premium States
+premium_users = set()
+premium_mode_enabled = False
+
 def get_user_setting(user_id, key, default):
     if user_id not in user_settings:
         user_settings[user_id] = {}
@@ -165,7 +169,23 @@ async def start_handler(client: Client, message: Message):
     )
     
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
+        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
+        [InlineKeyboardButton("💎 Premium Plan", callback_data="show_plan")]
+    ])
+
+    await message.reply_text(text, reply_markup=buttons)
+
+@app.on_message(filters.command("plan") & filters.private)
+async def plan_command(client: Client, message: Message):
+    text = (
+        f"💎 **Premium Plan**\n\n"
+        f"Upgrade to premium to access exclusive features!\n\n"
+        f"**Owner UPI ID:** `{Config.UPI_ID}`\n\n"
+        "Click the button below to pay via UPI QR Code."
+    )
+
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💸 Pay Now / QR Code", url=Config.UPI_PAYMENT_URL)]
     ])
     
     await message.reply_text(text, reply_markup=buttons)
@@ -237,6 +257,19 @@ async def callback_handler(client: Client, query: CallbackQuery):
     elif data == "close_settings":
         await query.message.delete()
         
+    elif data == "show_plan":
+        text = (
+            f"💎 **Premium Plan**\n\n"
+            f"Upgrade to premium to access exclusive features!\n\n"
+            f"**Owner UPI ID:** `{Config.UPI_ID}`\n\n"
+            "Click the button below to pay via UPI QR Code."
+        )
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💸 Pay Now / QR Code", url=Config.UPI_PAYMENT_URL)],
+            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
+        ])
+        await query.message.edit_text(text, reply_markup=buttons)
+
     elif data == "show_mp3_options":
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("Fast 128k", callback_data="set_quality_mp3_fast_128")],
@@ -339,6 +372,18 @@ async def callback_handler(client: Client, query: CallbackQuery):
 async def youtube_handler(client: Client, message: Message):
     user_id = message.from_user.id
     
+    # Check Premium Access
+    if premium_mode_enabled and user_id not in premium_users and user_id != Config.OWNER_ID:
+        await message.reply_text(
+            "🔒 **Premium Access Required**\n\n"
+            "This bot is currently in Premium Mode. You need a premium plan to use it.\n"
+            "Click below to view plans.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 View Plans", callback_data="show_plan")]
+            ])
+        )
+        return
+
     # Extract URL
     regex = r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/[^\s]+"
     match = re.search(regex, message.text)
@@ -393,6 +438,70 @@ async def text_handler(client: Client, message: Message):
         user_data[user_id]['state'] = 'idle'
         
         await message.reply_text(f"✅ Name set to: `{new_name}`")
+
+@app.on_message(filters.command("add_user") & filters.private)
+async def add_user_command(client: Client, message: Message):
+    user_id = message.from_user.id
+    if user_id != Config.OWNER_ID:
+        return
+
+    if len(message.command) < 2:
+        await message.reply_text("Usage: /add_user <user_id>")
+        return
+
+    try:
+        target_user_id = int(message.command[1])
+        premium_users.add(target_user_id)
+        await message.reply_text(f"✅ User `{target_user_id}` added to Premium.")
+
+        # Log to Channel
+        if Config.LOG_CHANNEL:
+            try:
+                await client.send_message(
+                    Config.LOG_CHANNEL,
+                    f"💎 **Premium User Added**\n\nUser ID: `{target_user_id}`\nAdded By: {message.from_user.mention}"
+                )
+            except Exception as e:
+                await message.reply_text(f"⚠️ Failed to log: {e}")
+
+    except ValueError:
+        await message.reply_text("❌ Invalid User ID.")
+
+@app.on_message(filters.command("premium_on") & filters.private)
+async def premium_on_command(client: Client, message: Message):
+    global premium_mode_enabled
+    if message.from_user.id != Config.OWNER_ID:
+        return
+
+    premium_mode_enabled = True
+    await message.reply_text("💎 **Premium Mode ENABLED**\nOnly premium users can use the bot now.")
+
+    if Config.LOG_CHANNEL:
+        try:
+            await client.send_message(
+                Config.LOG_CHANNEL,
+                f"🔒 **Premium Mode Enabled**\nBy: {message.from_user.mention}"
+            )
+        except:
+            pass
+
+@app.on_message(filters.command("premium_off") & filters.private)
+async def premium_off_command(client: Client, message: Message):
+    global premium_mode_enabled
+    if message.from_user.id != Config.OWNER_ID:
+        return
+
+    premium_mode_enabled = False
+    await message.reply_text("🔓 **Premium Mode DISABLED**\nEveryone can use the bot now.")
+
+    if Config.LOG_CHANNEL:
+        try:
+            await client.send_message(
+                Config.LOG_CHANNEL,
+                f"🔓 **Premium Mode Disabled**\nBy: {message.from_user.mention}"
+            )
+        except:
+            pass
 
 @app.on_message(filters.document & filters.private)
 async def document_handler(client: Client, message: Message):
