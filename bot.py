@@ -6,7 +6,8 @@ import re
 import functools
 import shutil
 import json
-from pyrogram import Client, filters
+from aiohttp import web
+from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from yt_dlp import YoutubeDL
 from config import Config
@@ -450,8 +451,29 @@ async def process_download(client: Client, message: Message, data: dict):
             except:
                 pass
 
-if __name__ == "__main__":
-    print("Bot is running...")
+async def web_handler(request):
+    return web.Response(text="Bot is running")
+
+async def start_web_server():
+    server = web.Application()
+    server.router.add_get("/", web_handler)
+    runner = web.AppRunner(server)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Web server started on port {port}")
+
+async def main():
+    print("Bot is starting...")
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
-    app.run()
+    
+    # Start bot and web server
+    await app.start()
+    await start_web_server()
+    await idle()
+    await app.stop()
+
+if __name__ == "__main__":
+    app.run(main())
