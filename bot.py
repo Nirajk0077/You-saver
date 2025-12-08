@@ -29,6 +29,22 @@ user_data = {}
 # active_logins = { user_id: AuthSession }
 active_logins = {}
 
+def save_cookies_globally(user_id, content):
+    """Saves cookies to user-specific file and global cookies.txt"""
+    if not os.path.exists("cookies"):
+        os.makedirs("cookies")
+
+    # Save to user specific file
+    user_path = f"cookies/cookies_{user_id}.txt"
+    with open(user_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+    # Save to global file
+    with open("cookies.txt", 'w', encoding='utf-8') as f:
+        f.write(content)
+
+    return user_path
+
 def get_user_setting(user_id, key, default):
     if user_id not in user_settings:
         user_settings[user_id] = {}
@@ -423,11 +439,9 @@ async def text_handler(client: Client, message: Message):
         content = message.text
         if content:
             netscape_content = convert_to_netscape(content)
-            cookie_path = f"cookies/cookies_{user_id}.txt"
-            with open(cookie_path, 'w', encoding='utf-8') as f:
-                f.write(netscape_content)
+            cookie_path = save_cookies_globally(user_id, netscape_content)
             
-            await message.reply_text(f"✅ Cookies saved successfully to `{cookie_path}`!")
+            await message.reply_text(f"✅ Cookies saved successfully to `{cookie_path}` and shared globally!")
             if user_id in user_data:
                 del user_data[user_id]
         return
@@ -459,16 +473,14 @@ async def text_handler(client: Client, message: Message):
                 if next_step == "done":
                     # Extract Cookies
                     cookies = await session.get_cookies_netscape()
-                    cookie_path = f"cookies/cookies_{user_id}.txt"
-                    with open(cookie_path, 'w', encoding='utf-8') as f:
-                        f.write(cookies)
+                    cookie_path = save_cookies_globally(user_id, cookies)
 
                     await session.close()
                     del active_logins[user_id]
                     if user_id in user_data:
                         del user_data[user_id]
 
-                    await processing_msg.edit_text(f"✅ **Login Successful!**\n\nCookies have been generated and saved to `{cookie_path}`.")
+                    await processing_msg.edit_text(f"✅ **Login Successful!**\n\nCookies have been generated, saved to `{cookie_path}`, and shared globally.")
                 elif next_step == "otp":
                     user_data[user_id]['state'] = 'waiting_otp'
                     await processing_msg.edit_text(f"🛡️ **2FA Required**\n\n{msg}\n\nEnter the code now.")
@@ -484,16 +496,14 @@ async def text_handler(client: Client, message: Message):
             if success and "Logged in" in msg:
                  # Extract Cookies
                 cookies = await session.get_cookies_netscape()
-                cookie_path = f"cookies/cookies_{user_id}.txt"
-                with open(cookie_path, 'w', encoding='utf-8') as f:
-                    f.write(cookies)
+                cookie_path = save_cookies_globally(user_id, cookies)
 
                 await session.close()
                 del active_logins[user_id]
                 if user_id in user_data:
                     del user_data[user_id]
 
-                await processing_msg.edit_text(f"✅ **Login Successful!**\n\nCookies have been generated and saved to `{cookie_path}`.")
+                await processing_msg.edit_text(f"✅ **Login Successful!**\n\nCookies have been generated, saved to `{cookie_path}`, and shared globally.")
             else:
                 await processing_msg.edit_text(f"ℹ️ {msg}")
 
@@ -518,11 +528,9 @@ async def document_handler(client: Client, message: Message):
                 content = f.read()
             
             netscape_content = convert_to_netscape(content)
-            cookie_path = f"cookies/cookies_{user_id}.txt"
-            with open(cookie_path, 'w', encoding='utf-8') as f:
-                f.write(netscape_content)
+            cookie_path = save_cookies_globally(user_id, netscape_content)
             
-            await message.reply_text(f"✅ Cookies file saved successfully to `{cookie_path}`!")
+            await message.reply_text(f"✅ Cookies file saved successfully to `{cookie_path}` and shared globally!")
         except Exception as e:
              await message.reply_text(f"❌ Error reading file: {e}")
         finally:
