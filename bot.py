@@ -249,17 +249,23 @@ async def callback_handler(client: Client, query: CallbackQuery):
     
     if data == "settings":
         is_leech = get_user_setting(user_id, 'leech', False)
-        status_text = "✅ ON" if is_leech else "❌ OFF"
-        btn_text = "Disable Leech Mode" if is_leech else "Enable Leech Mode"
+        auto_thumb = get_user_setting(user_id, 'auto_thumb', True)
+
+        leech_status = "✅ ON" if is_leech else "❌ OFF"
+        leech_btn_text = "Disable Leech Mode" if is_leech else "Enable Leech Mode"
+
+        thumb_status = "✅ ON" if auto_thumb else "❌ OFF"
+        thumb_btn_text = "Disable Auto Thumbnail" if auto_thumb else "Enable Auto Thumbnail"
         
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton(btn_text, callback_data="toggle_leech")],
+            [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
+            [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
             [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
             [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
         ])
         
         await query.message.edit_text(
-            f"⚙️ **Settings**\n\nLeech Mode: {status_text}\n\nIn Leech Mode, you can rename the file and set a custom thumbnail before downloading.",
+            f"⚙️ **Settings**\n\nLeech Mode: {leech_status}\nAuto Thumbnail: {thumb_status}\n\nIn Leech Mode, you can rename the file and set a custom thumbnail before downloading.",
             reply_markup=buttons
         )
     
@@ -312,17 +318,49 @@ async def callback_handler(client: Client, query: CallbackQuery):
         
         # Refresh settings menu
         is_leech = not current
-        status_text = "✅ ON" if is_leech else "❌ OFF"
-        btn_text = "Disable Leech Mode" if is_leech else "Enable Leech Mode"
+        auto_thumb = get_user_setting(user_id, 'auto_thumb', True)
+
+        leech_status = "✅ ON" if is_leech else "❌ OFF"
+        leech_btn_text = "Disable Leech Mode" if is_leech else "Enable Leech Mode"
+
+        thumb_status = "✅ ON" if auto_thumb else "❌ OFF"
+        thumb_btn_text = "Disable Auto Thumbnail" if auto_thumb else "Enable Auto Thumbnail"
         
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton(btn_text, callback_data="toggle_leech")],
+            [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
+            [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
             [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
             [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
         ])
         
         await query.message.edit_text(
-            f"⚙️ **Settings**\n\nLeech Mode: {status_text}",
+            f"⚙️ **Settings**\n\nLeech Mode: {leech_status}\nAuto Thumbnail: {thumb_status}",
+            reply_markup=buttons
+        )
+
+    elif data == "toggle_thumb":
+        current = get_user_setting(user_id, 'auto_thumb', True)
+        set_user_setting(user_id, 'auto_thumb', not current)
+
+        # Refresh settings menu
+        is_leech = get_user_setting(user_id, 'leech', False)
+        auto_thumb = not current
+
+        leech_status = "✅ ON" if is_leech else "❌ OFF"
+        leech_btn_text = "Disable Leech Mode" if is_leech else "Enable Leech Mode"
+
+        thumb_status = "✅ ON" if auto_thumb else "❌ OFF"
+        thumb_btn_text = "Disable Auto Thumbnail" if auto_thumb else "Enable Auto Thumbnail"
+
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
+            [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
+            [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
+            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
+        ])
+
+        await query.message.edit_text(
+            f"⚙️ **Settings**\n\nLeech Mode: {leech_status}\nAuto Thumbnail: {thumb_status}",
             reply_markup=buttons
         )
 
@@ -646,6 +684,9 @@ async def process_download(client: Client, message: Message, data: dict):
     if not os.path.exists(cookiefile):
         cookiefile = None
 
+    # Get auto_thumb setting
+    auto_thumb = get_user_setting(user_id, 'auto_thumb', True)
+
     try:
         loop = asyncio.get_running_loop()
         # If custom thumb is provided, we might not need yt-dlp to write one, 
@@ -655,7 +696,7 @@ async def process_download(client: Client, message: Message, data: dict):
         download_start = time.time()
         info = await loop.run_in_executor(
             None, 
-            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=True, cookiefile=cookiefile, progress_args=(download_start, loop, status_msg, check_cancel))
+            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=auto_thumb, cookiefile=cookiefile, progress_args=(download_start, loop, status_msg, check_cancel))
         )
         
         title = info.get('title', 'Unknown Title')
@@ -667,12 +708,12 @@ async def process_download(client: Client, message: Message, data: dict):
         
         # Determine which thumbnail to use
         # 1. Custom thumb if provided
-        # 2. Downloaded thumb from yt-dlp
+        # 2. Downloaded thumb from yt-dlp (if auto_thumb is True)
         thumb_to_use = None
         
         if custom_thumb and os.path.exists(custom_thumb):
             thumb_to_use = custom_thumb
-        else:
+        elif auto_thumb:
             thumb_files = glob.glob(f"{files_path}*.jpg") + glob.glob(f"{files_path}*.webp") + glob.glob(f"{files_path}*.png")
             if thumb_files:
                 thumb_to_use = thumb_files[0]
