@@ -56,20 +56,49 @@ def set_user_setting(user_id, key, value):
         user_settings[user_id] = {}
     user_settings[user_id][key] = value
 
-def progress_hook(d):
-    if d['status'] == 'finished':
-        print('Download finished, now converting ...')
+class DownloadProgressHook:
+    def __init__(self, start_time=None, loop=None, status_msg=None):
+        self.start_time = start_time
+        self.loop = loop
+        self.status_msg = status_msg
+        self.last_update = 0
 
-def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefile=None):
+    def __call__(self, d):
+        if d['status'] == 'finished':
+            print('Download finished, now converting ...')
+
+        if d['status'] == 'downloading' and self.status_msg:
+            now = time.time()
+            if now - self.last_update > 5:
+                self.last_update = now
+                total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                current = d.get('downloaded_bytes', 0)
+
+                if total > 0:
+                    asyncio.run_coroutine_threadsafe(
+                        progress_for_pyrogram(
+                            current,
+                            total,
+                            "⬇️ Downloading...",
+                            self.status_msg,
+                            self.start_time,
+                            force=True
+                        ),
+                        self.loop
+                    )
+
+def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefile=None, progress_args=None):
     """
     Synchronous wrapper for yt-dlp download to be run in an executor.
     Quality should be '1080', '720', '480', '360' or 'mp3_...'.
     """
+    hook = DownloadProgressHook(*progress_args) if progress_args else DownloadProgressHook()
+
     ydl_opts = {
         'outtmpl': output_path,
         'writethumbnail': writethumbnail,
         'quiet': True,
-        'progress_hooks': [progress_hook],
+        'progress_hooks': [hook],
         'noplaylist': True,
     }
 
@@ -589,9 +618,10 @@ async def process_download(client: Client, message: Message, data: dict):
         # but it's safer to let it write one as backup if we don't use it.
         # However, if we have a custom thumb, we will pass it explicitly to send_video.
         
+        download_start = time.time()
         info = await loop.run_in_executor(
             None, 
-            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=True, cookiefile=cookiefile)
+            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=True, cookiefile=cookiefile, progress_args=(download_start, loop, status_msg))
         )
         
         title = info.get('title', 'Unknown Title')
