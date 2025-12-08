@@ -18,5 +18,8 @@ RUN playwright install --with-deps chromium
 # Copy the rest of the application
 COPY . .
 
+# Expose the port for the web server
+EXPOSE 8000
+
 # Run the bot
 CMD ["python", "bot.py"]
