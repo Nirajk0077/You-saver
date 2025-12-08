@@ -12,6 +12,7 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 from yt_dlp import YoutubeDL
 from config import Config
 from auth_helper import AuthSession
+from progress import progress_for_pyrogram, humanbytes
 
 # Initialize the Client
 app = Client(
@@ -623,7 +624,21 @@ async def process_download(client: Client, message: Message, data: dict):
         
         if video_files:
             video_path = video_files[0]
-            caption = f"🎥 **{final_title}**\n**Quality:** {quality}p\n\n👤 **Requested by:** {mention}"
+            # Get languages if available, else default to 'English/Unknown'
+            # yt-dlp info might have 'language' or 'requested_subtitles' etc but often it is hard to determine precisely for video file if not in info.
+            # However, info dict usually has 'language' field if available.
+            languages = info.get('language') or "English"
+            file_size = os.path.getsize(video_path)
+
+            caption = (
+                f"<b>{final_title}</b>\n\n"
+                f"🔊 {languages}\n"
+                f"💿 <b>Size:</b> {humanbytes(file_size)}\n"
+                f"👤 <b>Requested by:</b> {mention}"
+            )
+
+            # Start timer for progress
+            start_time = time.time()
             await status_msg.edit_text("⬆️ Uploading Video to Telegram...")
 
             await client.send_video(
@@ -634,13 +649,25 @@ async def process_download(client: Client, message: Message, data: dict):
                 width=width,
                 height=height,
                 thumb=thumb_to_use,
-                supports_streaming=True
+                supports_streaming=True,
+                progress=progress_for_pyrogram,
+                progress_args=("⬆️ Uploading Video...", status_msg, start_time)
             )
 
         elif audio_files:
             audio_path = audio_files[0]
+            languages = info.get('language') or "English"
+            file_size = os.path.getsize(audio_path)
+
             display_quality = quality.replace("mp3_", "MP3 ").replace("_", " ")
-            caption = f"🎵 **{final_title}**\n**Quality:** {display_quality}\n\n👤 **Requested by:** {mention}"
+            caption = (
+                f"<b>{final_title}</b>\n\n"
+                f"🔊 {languages}\n"
+                f"💿 <b>Size:</b> {humanbytes(file_size)}\n"
+                f"👤 <b>Requested by:</b> {mention}"
+            )
+
+            start_time = time.time()
             await status_msg.edit_text("⬆️ Uploading Audio to Telegram...")
 
             await client.send_audio(
@@ -650,7 +677,9 @@ async def process_download(client: Client, message: Message, data: dict):
                 duration=duration,
                 performer=info.get('uploader'),
                 title=final_title,
-                thumb=thumb_to_use
+                thumb=thumb_to_use,
+                progress=progress_for_pyrogram,
+                progress_args=("⬆️ Uploading Audio...", status_msg, start_time)
             )
 
         else:
