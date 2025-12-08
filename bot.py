@@ -6,6 +6,7 @@ import re
 import functools
 import shutil
 import json
+import subprocess
 from aiohttp import web
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -25,6 +26,30 @@ app = Client(
 # Global States
 # user_settings = { user_id: {'leech': bool} }
 user_settings = {}
+SETTINGS_FILE = "user_settings.json"
+
+def load_settings():
+    global user_settings
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                data = json.load(f)
+                # Convert keys (user_ids) back to integers
+                user_settings = {int(k): v for k, v in data.items()}
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+            user_settings = {}
+
+def save_settings():
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(user_settings, f, indent=4)
+    except Exception as e:
+        print(f"Error saving settings: {e}")
+
+# Load settings on startup
+load_settings()
+
 # user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'quality': str} }
 user_data = {}
 # active_logins = { user_id: AuthSession }
@@ -57,6 +82,7 @@ def set_user_setting(user_id, key, value):
     if user_id not in user_settings:
         user_settings[user_id] = {}
     user_settings[user_id][key] = value
+    save_settings()
 
 class DownloadProgressHook:
     def __init__(self, start_time=None, loop=None, status_msg=None, check_cancel=None):
@@ -215,17 +241,37 @@ def convert_to_netscape(content):
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    leech_status = "✅ ON" if get_user_setting(user_id, 'leech', False) else "❌ OFF"
+
+    # Get Settings
+    is_leech = get_user_setting(user_id, 'leech', False)
+    auto_thumb = get_user_setting(user_id, 'auto_thumb', True)
+    thumb_mode = get_user_setting(user_id, 'thumb_mode', 'cover') # cover or frame
+
+    # Text Status
+    leech_text = "Leech Mode ✅" if is_leech else "Leech Mode ❌"
+    thumb_text = "Auto Thumb ✅" if auto_thumb else "Auto Thumb ❌"
+    mode_text = "Mode: Cover 🖼️" if thumb_mode == 'cover' else "Mode: Frame 🎞️"
     
     text = (
         f"👋 Hello {message.from_user.mention}!\n\n"
         "I am a YouTube Downloader Bot.\n"
         "Send me a YouTube link to download video.\n\n"
-        f"**Current Mode:**\nLeech Mode: {leech_status}"
+        "**⚙️ Dashboard:**"
     )
     
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
+        [
+            InlineKeyboardButton(leech_text, callback_data="toggle_leech"),
+            InlineKeyboardButton(thumb_text, callback_data="toggle_thumb")
+        ],
+        [
+            InlineKeyboardButton(mode_text, callback_data="toggle_thumb_mode"),
+            InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")
+        ],
+        [
+            InlineKeyboardButton("Set Log Channel", callback_data="set_log_channel"),
+            InlineKeyboardButton("Set Bin Channel", callback_data="set_bin_channel")
+        ]
     ])
     
     await message.reply_text(text, reply_markup=buttons)
@@ -247,27 +293,39 @@ async def callback_handler(client: Client, query: CallbackQuery):
     user_id = query.from_user.id
     data = query.data
     
-    if data == "settings":
+    # Helper to refresh main menu
+    async def refresh_main_menu():
         is_leech = get_user_setting(user_id, 'leech', False)
         auto_thumb = get_user_setting(user_id, 'auto_thumb', True)
+        thumb_mode = get_user_setting(user_id, 'thumb_mode', 'cover')
 
-        leech_status = "✅ ON" if is_leech else "❌ OFF"
-        leech_btn_text = "Disable Leech Mode" if is_leech else "Enable Leech Mode"
+        leech_text = "Leech Mode ✅" if is_leech else "Leech Mode ❌"
+        thumb_text = "Auto Thumb ✅" if auto_thumb else "Auto Thumb ❌"
+        mode_text = "Mode: Cover 🖼️" if thumb_mode == 'cover' else "Mode: Frame 🎞️"
 
-        thumb_status = "✅ ON" if auto_thumb else "❌ OFF"
-        thumb_btn_text = "Disable Auto Thumbnail" if auto_thumb else "Enable Auto Thumbnail"
-        
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
-            [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
-            [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
-            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
+            [
+                InlineKeyboardButton(leech_text, callback_data="toggle_leech"),
+                InlineKeyboardButton(thumb_text, callback_data="toggle_thumb")
+            ],
+            [
+                InlineKeyboardButton(mode_text, callback_data="toggle_thumb_mode"),
+                InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")
+            ],
+            [
+                InlineKeyboardButton("Set Log Channel", callback_data="set_log_channel"),
+                InlineKeyboardButton("Set Bin Channel", callback_data="set_bin_channel")
+            ]
         ])
         
         await query.message.edit_text(
-            f"⚙️ **Settings**\n\nLeech Mode: {leech_status}\nAuto Thumbnail: {thumb_status}\n\nIn Leech Mode, you can rename the file and set a custom thumbnail before downloading.",
+            "**⚙️ Dashboard:**",
             reply_markup=buttons
         )
+
+    if data == "settings":
+        # Redirect to main menu style if called
+        await refresh_main_menu()
     
     elif data == "set_cookies_btn":
         # user_data[user_id] = {'state': 'waiting_cookies'}
@@ -315,54 +373,26 @@ async def callback_handler(client: Client, query: CallbackQuery):
     elif data == "toggle_leech":
         current = get_user_setting(user_id, 'leech', False)
         set_user_setting(user_id, 'leech', not current)
-        
-        # Refresh settings menu
-        is_leech = not current
-        auto_thumb = get_user_setting(user_id, 'auto_thumb', True)
-
-        leech_status = "✅ ON" if is_leech else "❌ OFF"
-        leech_btn_text = "Disable Leech Mode" if is_leech else "Enable Leech Mode"
-
-        thumb_status = "✅ ON" if auto_thumb else "❌ OFF"
-        thumb_btn_text = "Disable Auto Thumbnail" if auto_thumb else "Enable Auto Thumbnail"
-        
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
-            [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
-            [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
-            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
-        ])
-        
-        await query.message.edit_text(
-            f"⚙️ **Settings**\n\nLeech Mode: {leech_status}\nAuto Thumbnail: {thumb_status}",
-            reply_markup=buttons
-        )
+        await refresh_main_menu()
 
     elif data == "toggle_thumb":
         current = get_user_setting(user_id, 'auto_thumb', True)
         set_user_setting(user_id, 'auto_thumb', not current)
+        await refresh_main_menu()
 
-        # Refresh settings menu
-        is_leech = get_user_setting(user_id, 'leech', False)
-        auto_thumb = not current
+    elif data == "toggle_thumb_mode":
+        current = get_user_setting(user_id, 'thumb_mode', 'cover')
+        new_mode = 'frame' if current == 'cover' else 'cover'
+        set_user_setting(user_id, 'thumb_mode', new_mode)
+        await refresh_main_menu()
 
-        leech_status = "✅ ON" if is_leech else "❌ OFF"
-        leech_btn_text = "Disable Leech Mode" if is_leech else "Enable Leech Mode"
+    elif data == "set_log_channel":
+        user_data[user_id] = {'state': 'waiting_log_channel'}
+        await query.message.reply_text("📢 Send me the **Log Channel ID** (e.g. -1001234567890) or forward a message from it:")
 
-        thumb_status = "✅ ON" if auto_thumb else "❌ OFF"
-        thumb_btn_text = "Disable Auto Thumbnail" if auto_thumb else "Enable Auto Thumbnail"
-
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
-            [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
-            [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
-            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
-        ])
-
-        await query.message.edit_text(
-            f"⚙️ **Settings**\n\nLeech Mode: {leech_status}\nAuto Thumbnail: {thumb_status}",
-            reply_markup=buttons
-        )
+    elif data == "set_bin_channel":
+        user_data[user_id] = {'state': 'waiting_bin_channel'}
+        await query.message.reply_text("🗑️ Send me the **Bin Channel ID** (e.g. -1001234567890) or forward a message from it:")
 
     elif data == "close_settings":
         await query.message.delete()
@@ -611,6 +641,48 @@ async def text_handler(client: Client, message: Message):
         
         await message.reply_text(f"✅ Name set to: `{new_name}`")
 
+    elif state == 'waiting_log_channel':
+        text_input = message.text.strip()
+        # Basic validation for channel ID
+        if text_input.startswith("-100") and text_input[4:].isdigit():
+             set_user_setting(user_id, 'log_channel', int(text_input))
+             await message.reply_text(f"✅ Log Channel set to: `{text_input}`")
+             if user_id in user_data: del user_data[user_id]
+        else:
+            await message.reply_text("❌ Invalid Channel ID format. Must start with -100...")
+
+    elif state == 'waiting_bin_channel':
+        text_input = message.text.strip()
+        if text_input.startswith("-100") and text_input[4:].isdigit():
+             set_user_setting(user_id, 'bin_channel', int(text_input))
+             await message.reply_text(f"✅ Bin Channel set to: `{text_input}`")
+             if user_id in user_data: del user_data[user_id]
+        else:
+            await message.reply_text("❌ Invalid Channel ID format. Must start with -100...")
+
+@app.on_message(filters.forwarded)
+async def forwarded_handler(client: Client, message: Message):
+    user_id = message.from_user.id
+    state = user_data.get(user_id, {}).get('state')
+
+    if state == 'waiting_log_channel':
+        if message.forward_from_chat and message.forward_from_chat.type == "channel":
+            chat_id = message.forward_from_chat.id
+            set_user_setting(user_id, 'log_channel', chat_id)
+            await message.reply_text(f"✅ Log Channel set to: `{chat_id}`")
+            if user_id in user_data: del user_data[user_id]
+        else:
+            await message.reply_text("❌ Could not detect channel ID. Make sure you forwarded from a channel.")
+
+    elif state == 'waiting_bin_channel':
+        if message.forward_from_chat and message.forward_from_chat.type == "channel":
+            chat_id = message.forward_from_chat.id
+            set_user_setting(user_id, 'bin_channel', chat_id)
+            await message.reply_text(f"✅ Bin Channel set to: `{chat_id}`")
+            if user_id in user_data: del user_data[user_id]
+        else:
+            await message.reply_text("❌ Could not detect channel ID. Make sure you forwarded from a channel.")
+
 @app.on_message(filters.document)
 async def document_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -684,19 +756,21 @@ async def process_download(client: Client, message: Message, data: dict):
     if not os.path.exists(cookiefile):
         cookiefile = None
 
-    # Get auto_thumb setting
+    # Get settings
     auto_thumb = get_user_setting(user_id, 'auto_thumb', True)
+    thumb_mode = get_user_setting(user_id, 'thumb_mode', 'cover')
+
+    # If mode is frame, we don't need yt-dlp to write thumbnail, we will extract it.
+    # But if mode is cover, we do.
+    write_yt_thumb = auto_thumb and (thumb_mode == 'cover')
 
     try:
         loop = asyncio.get_running_loop()
-        # If custom thumb is provided, we might not need yt-dlp to write one, 
-        # but it's safer to let it write one as backup if we don't use it.
-        # However, if we have a custom thumb, we will pass it explicitly to send_video.
         
         download_start = time.time()
         info = await loop.run_in_executor(
             None, 
-            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=auto_thumb, cookiefile=cookiefile, progress_args=(download_start, loop, status_msg, check_cancel))
+            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=write_yt_thumb, cookiefile=cookiefile, progress_args=(download_start, loop, status_msg, check_cancel))
         )
         
         title = info.get('title', 'Unknown Title')
@@ -707,16 +781,37 @@ async def process_download(client: Client, message: Message, data: dict):
         files_path = f"downloads/{timestamp}/"
         
         # Determine which thumbnail to use
-        # 1. Custom thumb if provided
-        # 2. Downloaded thumb from yt-dlp (if auto_thumb is True)
         thumb_to_use = None
         
         if custom_thumb and os.path.exists(custom_thumb):
             thumb_to_use = custom_thumb
         elif auto_thumb:
-            thumb_files = glob.glob(f"{files_path}*.jpg") + glob.glob(f"{files_path}*.webp") + glob.glob(f"{files_path}*.png")
-            if thumb_files:
-                thumb_to_use = thumb_files[0]
+            if thumb_mode == 'cover':
+                # Use downloaded thumb from yt-dlp
+                thumb_files = glob.glob(f"{files_path}*.jpg") + glob.glob(f"{files_path}*.webp") + glob.glob(f"{files_path}*.png")
+                if thumb_files:
+                    thumb_to_use = thumb_files[0]
+            elif thumb_mode == 'frame':
+                # Extract frame from video
+                video_files_check = glob.glob(f"{files_path}*.mp4")
+                if video_files_check:
+                    video_path_check = video_files_check[0]
+                    thumb_path_gen = f"{files_path}frame_thumb.jpg"
+                    try:
+                        # Extract frame at 1 second
+                        cmd = [
+                            "ffmpeg", "-i", video_path_check,
+                            "-ss", "00:00:01",
+                            "-vframes", "1",
+                            thumb_path_gen,
+                            "-y", "-loglevel", "quiet"
+                        ]
+                        await loop.run_in_executor(None, lambda: subprocess.run(cmd, check=True))
+
+                        if os.path.exists(thumb_path_gen):
+                            thumb_to_use = thumb_path_gen
+                    except Exception as e:
+                        print(f"Error extracting frame: {e}")
 
         # Check for Video or Audio
         video_files = glob.glob(f"{files_path}*.mp4")
@@ -746,7 +841,7 @@ async def process_download(client: Client, message: Message, data: dict):
             start_time = time.time()
             await status_msg.edit_text("⬆️ Uploading Video to Telegram...")
 
-            await client.send_video(
+            sent_msg = await client.send_video(
                 chat_id=message.chat.id,
                 video=video_path,
                 caption=caption,
@@ -775,7 +870,7 @@ async def process_download(client: Client, message: Message, data: dict):
             start_time = time.time()
             await status_msg.edit_text("⬆️ Uploading Audio to Telegram...")
 
-            await client.send_audio(
+            sent_msg = await client.send_audio(
                 chat_id=message.chat.id,
                 audio=audio_path,
                 caption=caption,
@@ -791,6 +886,30 @@ async def process_download(client: Client, message: Message, data: dict):
             await status_msg.edit_text("❌ Error: Could not find downloaded file.")
             return
         
+        # Post-upload actions (Log & Bin)
+        if sent_msg:
+             # Log Channel
+             log_channel = get_user_setting(user_id, 'log_channel', None)
+             if log_channel:
+                 try:
+                     log_text = (
+                         f"✅ **Download Completed**\n\n"
+                         f"👤 **User:** {mention} [`{user.id}`]\n"
+                         f"📄 **Title:** {final_title}\n"
+                         f"💾 **Size:** {humanbytes(file_size)}\n"
+                     )
+                     await client.send_message(log_channel, log_text)
+                 except Exception as e:
+                     print(f"Log Error: {e}")
+
+             # Bin Channel
+             bin_channel = get_user_setting(user_id, 'bin_channel', None)
+             if bin_channel:
+                 try:
+                     await sent_msg.forward(bin_channel)
+                 except Exception as e:
+                     print(f"Bin Error: {e}")
+
         await status_msg.delete()
         
         # Delete the user's original link/message
@@ -866,6 +985,36 @@ async def api_info_handler(request):
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
 
+async def cleanup_downloads_task():
+    """
+    Periodically checks downloads folder and removes files older than 3 hours.
+    """
+    while True:
+        try:
+            current_time = time.time()
+            downloads_path = "downloads"
+            if os.path.exists(downloads_path):
+                for item in os.listdir(downloads_path):
+                    item_path = os.path.join(downloads_path, item)
+                    # Check modification time
+                    if os.path.exists(item_path):
+                         # If it's a timestamp folder (digits), check creation time
+                         # But easier to just check modification time of the folder/file
+                         mtime = os.path.getmtime(item_path)
+                         if current_time - mtime > 3 * 3600: # 3 hours
+                             try:
+                                 if os.path.isdir(item_path):
+                                     shutil.rmtree(item_path, ignore_errors=True)
+                                 else:
+                                     os.remove(item_path)
+                                 print(f"Cleaned up old download: {item}")
+                             except Exception as e:
+                                 print(f"Error deleting {item}: {e}")
+        except Exception as e:
+            print(f"Error in downloads cleanup task: {e}")
+
+        await asyncio.sleep(3600) # Run every hour
+
 async def cleanup_sessions_task():
     """
     Periodically checks for and cleans up inactive login sessions.
@@ -918,8 +1067,9 @@ async def main():
     await app.start()
     await start_web_server()
 
-    # Start background cleanup task
+    # Start background cleanup tasks
     asyncio.create_task(cleanup_sessions_task())
+    asyncio.create_task(cleanup_downloads_task())
 
     await idle()
     await app.stop()
