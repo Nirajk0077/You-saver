@@ -1,3 +1,3 @@
 # Process types for Heroku/Render
-worker: python bot.py
-web: python bot.py
+worker: playwright install chromium && python bot.py
+web: playwright install chromium && python bot.py
