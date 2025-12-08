@@ -1,6 +1,0 @@
-pyrogram==2.0.106
-tgcrypto
-yt-dlp
-aiohttp
-playwright
-playwright-stealth
