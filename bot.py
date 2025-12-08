@@ -6,6 +6,14 @@ import re
 import functools
 import shutil
 import json
+
+# Fix for "There is no current event loop in thread 'MainThread'"
+try:
+    loop = asyncio.get_running_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 from aiohttp import web
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -925,4 +933,4 @@ async def main():
     await app.stop()
 
 if __name__ == "__main__":
-    app.run(main())
+    loop.run_until_complete(main())
