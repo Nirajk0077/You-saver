@@ -11,6 +11,7 @@ from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from yt_dlp import YoutubeDL
 from config import Config
+from auth_helper import AuthSession
 
 # Initialize the Client
 app = Client(
@@ -25,6 +26,8 @@ app = Client(
 user_settings = {}
 # user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'quality': str} }
 user_data = {}
+# active_logins = { user_id: AuthSession }
+active_logins = {}
 
 def get_user_setting(user_id, key, default):
     if user_id not in user_settings:
@@ -40,7 +43,7 @@ def progress_hook(d):
     if d['status'] == 'finished':
         print('Download finished, now converting ...')
 
-def download_video_sync(url, output_path, quality, writethumbnail=True):
+def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefile=None):
     """
     Synchronous wrapper for yt-dlp download to be run in an executor.
     Quality should be '1080', '720', '480', '360' or 'mp3_...'.
@@ -86,20 +89,24 @@ def download_video_sync(url, output_path, quality, writethumbnail=True):
         ydl_opts['format'] = format_str
         ydl_opts['merge_output_format'] = 'mp4'
 
-    if os.path.exists('cookies.txt'):
+    if cookiefile and os.path.exists(cookiefile):
+        ydl_opts['cookiefile'] = cookiefile
+    elif os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
     
     with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         return info
 
-def fetch_info_sync(url):
+def fetch_info_sync(url, cookiefile=None):
     ydl_opts = {
         'quiet': True,
         'noplaylist': True,
     }
 
-    if os.path.exists('cookies.txt'):
+    if cookiefile and os.path.exists(cookiefile):
+        ydl_opts['cookiefile'] = cookiefile
+    elif os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
 
     with YoutubeDL(ydl_opts) as ydl:
@@ -204,15 +211,47 @@ async def callback_handler(client: Client, query: CallbackQuery):
         )
     
     elif data == "set_cookies_btn":
+        # user_data[user_id] = {'state': 'waiting_cookies'}
+
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔑 Login to YouTube (Auto)", callback_data="login_youtube")],
+            [InlineKeyboardButton("📤 Upload Cookies File", callback_data="upload_cookies_file")],
+            [InlineKeyboardButton("🔙 Back", callback_data="settings")]
+        ])
+
+        await query.message.edit_text(
+            "🍪 **Set Cookies**\n\n"
+            "Choose a method to set cookies:\n"
+            "1. **Login to YouTube**: The bot will log in and generate cookies for you.\n"
+            "2. **Upload File**: Manually upload Netscape/JSON cookie file.",
+            reply_markup=buttons
+        )
+
+    elif data == "upload_cookies_file":
         user_data[user_id] = {'state': 'waiting_cookies'}
         await query.message.reply_text(
-            "🍪 **Set Cookies**\n\n"
-            "Please send your cookies in one of the following formats:\n"
-            "1. **Netscape Format** (File)\n"
-            "2. **JSON Format** (File/Text)\n"
-            "3. **Header String** (Text)\n\n"
-            "Send the file or text now."
+            "📤 **Upload Cookies**\n\n"
+            "Please send your cookies file (Netscape or JSON format) or paste the content as text."
         )
+
+    elif data == "login_youtube":
+        if user_id in active_logins:
+            await query.answer("Login session already active.", show_alert=True)
+            return
+
+        msg = await query.message.reply_text("🔄 **Initializing Login Session...**\nPlease wait, launching browser...")
+
+        session = AuthSession(user_id)
+        active_logins[user_id] = session
+
+        success, message = await session.start()
+
+        if success:
+            user_data[user_id] = {'state': 'waiting_email'}
+            await msg.edit_text(f"✅ **Browser Launched**\n\n{message}\n\nSend your **Email** now.")
+        else:
+            del active_logins[user_id]
+            await msg.edit_text(f"❌ **Error:** {message}")
 
     elif data == "toggle_leech":
         current = get_user_setting(user_id, 'leech', False)
@@ -288,7 +327,12 @@ async def callback_handler(client: Client, query: CallbackQuery):
             await query.message.edit_text("🔎 Fetching info...")
             try:
                 loop = asyncio.get_running_loop()
-                info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url))
+                # Determine cookie file
+                cookiefile = f"cookies/cookies_{user_id}.txt"
+                if not os.path.exists(cookiefile):
+                    cookiefile = None
+
+                info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url, cookiefile))
                 title = info.get('title', 'Unknown Title')
                 
                 user_data[user_id]['title'] = title
@@ -379,12 +423,80 @@ async def text_handler(client: Client, message: Message):
         content = message.text
         if content:
             netscape_content = convert_to_netscape(content)
-            with open('cookies.txt', 'w', encoding='utf-8') as f:
+            cookie_path = f"cookies/cookies_{user_id}.txt"
+            with open(cookie_path, 'w', encoding='utf-8') as f:
                 f.write(netscape_content)
             
-            await message.reply_text("✅ Cookies saved successfully!")
+            await message.reply_text(f"✅ Cookies saved successfully to `{cookie_path}`!")
             if user_id in user_data:
                 del user_data[user_id]
+        return
+
+    # Login Flow States
+    if user_id in active_logins:
+        session = active_logins[user_id]
+        text_input = message.text.strip()
+
+        if state == 'waiting_email':
+            processing_msg = await message.reply_text("🔄 Processing Email...")
+            success, msg = await session.enter_email(text_input)
+
+            if success:
+                if "password" in msg.lower():
+                    user_data[user_id]['state'] = 'waiting_password'
+                    await processing_msg.edit_text(f"✅ {msg}")
+                else:
+                    await processing_msg.edit_text(f"⚠️ {msg}")
+            else:
+                await processing_msg.edit_text(f"❌ {msg}\n\nTry again or /cancel.")
+
+        elif state == 'waiting_password':
+            # Delete password message for security if possible, but telegram bots can't delete user messages easily in private
+            processing_msg = await message.reply_text("🔄 Processing Password...")
+            success, msg, next_step = await session.enter_password(text_input)
+
+            if success:
+                if next_step == "done":
+                    # Extract Cookies
+                    cookies = await session.get_cookies_netscape()
+                    cookie_path = f"cookies/cookies_{user_id}.txt"
+                    with open(cookie_path, 'w', encoding='utf-8') as f:
+                        f.write(cookies)
+
+                    await session.close()
+                    del active_logins[user_id]
+                    if user_id in user_data:
+                        del user_data[user_id]
+
+                    await processing_msg.edit_text(f"✅ **Login Successful!**\n\nCookies have been generated and saved to `{cookie_path}`.")
+                elif next_step == "otp":
+                    user_data[user_id]['state'] = 'waiting_otp'
+                    await processing_msg.edit_text(f"🛡️ **2FA Required**\n\n{msg}\n\nEnter the code now.")
+                else:
+                    await processing_msg.edit_text(f"⚠️ {msg}")
+            else:
+                 await processing_msg.edit_text(f"❌ {msg}\n\nTry again or /cancel.")
+
+        elif state == 'waiting_otp':
+            processing_msg = await message.reply_text("🔄 Verifying OTP...")
+            success, msg = await session.enter_otp(text_input)
+
+            if success and "Logged in" in msg:
+                 # Extract Cookies
+                cookies = await session.get_cookies_netscape()
+                cookie_path = f"cookies/cookies_{user_id}.txt"
+                with open(cookie_path, 'w', encoding='utf-8') as f:
+                    f.write(cookies)
+
+                await session.close()
+                del active_logins[user_id]
+                if user_id in user_data:
+                    del user_data[user_id]
+
+                await processing_msg.edit_text(f"✅ **Login Successful!**\n\nCookies have been generated and saved to `{cookie_path}`.")
+            else:
+                await processing_msg.edit_text(f"ℹ️ {msg}")
+
         return
 
     if state == 'waiting_rename':
@@ -406,10 +518,11 @@ async def document_handler(client: Client, message: Message):
                 content = f.read()
             
             netscape_content = convert_to_netscape(content)
-            with open('cookies.txt', 'w', encoding='utf-8') as f:
+            cookie_path = f"cookies/cookies_{user_id}.txt"
+            with open(cookie_path, 'w', encoding='utf-8') as f:
                 f.write(netscape_content)
             
-            await message.reply_text("✅ Cookies file saved successfully!")
+            await message.reply_text(f"✅ Cookies file saved successfully to `{cookie_path}`!")
         except Exception as e:
              await message.reply_text(f"❌ Error reading file: {e}")
         finally:
@@ -441,6 +554,7 @@ async def process_download(client: Client, message: Message, data: dict):
     original_msg_id = data.get('original_message_id')
     user = data.get('user', message.from_user) # Fallback to message.from_user if not in data
     quality = data.get('quality', '1080')
+    user_id = message.chat.id
 
     # Send processing message
     status_msg = await client.send_message(message.chat.id, f"⬇️ Downloading video ({quality}p)...")
@@ -455,6 +569,11 @@ async def process_download(client: Client, message: Message, data: dict):
     else:
         output_template = f"downloads/{timestamp}/%(title)s.%(ext)s"
     
+    # Determine cookie file
+    cookiefile = f"cookies/cookies_{user_id}.txt"
+    if not os.path.exists(cookiefile):
+        cookiefile = None
+
     try:
         loop = asyncio.get_running_loop()
         # If custom thumb is provided, we might not need yt-dlp to write one, 
@@ -463,7 +582,7 @@ async def process_download(client: Client, message: Message, data: dict):
         
         info = await loop.run_in_executor(
             None, 
-            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=True)
+            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=True, cookiefile=cookiefile)
         )
         
         title = info.get('title', 'Unknown Title')
@@ -601,6 +720,36 @@ async def api_info_handler(request):
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
 
+async def cleanup_sessions_task():
+    """
+    Periodically checks for and cleans up inactive login sessions.
+    """
+    while True:
+        try:
+            current_time = time.time()
+            to_remove = []
+
+            for user_id, session in list(active_logins.items()):
+                # If session is inactive for more than 5 minutes, close it
+                if current_time - session.last_activity > 300: # 300 seconds = 5 minutes
+                    try:
+                        await session.close()
+                    except:
+                        pass
+                    to_remove.append(user_id)
+
+            for user_id in to_remove:
+                if user_id in active_logins:
+                    del active_logins[user_id]
+                # Also clean up user_data state if stuck in login flow
+                if user_id in user_data and user_data[user_id].get('state') in ['waiting_email', 'waiting_password', 'waiting_otp']:
+                    del user_data[user_id]
+
+        except Exception as e:
+            print(f"Error in cleanup task: {e}")
+
+        await asyncio.sleep(60) # Run every minute
+
 async def start_web_server():
     server = web.Application()
     server.router.add_get("/", web_handler)
@@ -616,10 +765,16 @@ async def main():
     print("Bot is starting...")
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
+    if not os.path.exists("cookies"):
+        os.makedirs("cookies")
     
     # Start bot and web server
     await app.start()
     await start_web_server()
+
+    # Start background cleanup task
+    asyncio.create_task(cleanup_sessions_task())
+
     await idle()
     await app.stop()
 
