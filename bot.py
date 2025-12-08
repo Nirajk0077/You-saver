@@ -6,6 +6,7 @@ import re
 import functools
 import shutil
 import json
+import subprocess
 from aiohttp import web
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -25,7 +26,7 @@ app = Client(
 # Global States
 # user_settings = { user_id: {'leech': bool} }
 user_settings = {}
-# user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'quality': str} }
+# user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'quality': str, 'as_document': bool, 'metadata_title': str} }
 user_data = {}
 # active_logins = { user_id: AuthSession }
 active_logins = {}
@@ -448,14 +449,20 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 
                 user_data[user_id]['title'] = title
                 user_data[user_id]['state'] = 'idle'
+                # Initialize flags if not present
+                user_data[user_id]['as_document'] = False
+                user_data[user_id]['metadata_title'] = None
                 
                 display_quality = quality.replace("mp3_", "MP3 ").replace("_", " ") if "mp3" in quality else f"{quality}p"
+                as_doc = user_data[user_id].get('as_document', False)
 
                 text = f"📹 **Content Found**\n\n**Title:** `{title}`\n**Quality:** {display_quality}\n\nSelect an action:"
                 
                 buttons = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✏️ Rename", callback_data="leech_rename"),
                      InlineKeyboardButton("🖼️ Set Thumbnail", callback_data="leech_thumb")],
+                    [InlineKeyboardButton("📝 Metadata", callback_data="leech_metadata"),
+                     InlineKeyboardButton(f"📂 Attachment: {'ON' if as_doc else 'OFF'}", callback_data="leech_attachment")],
                     [InlineKeyboardButton("🚀 Upload Now", callback_data="leech_upload")],
                     [InlineKeyboardButton("❌ Cancel", callback_data="leech_cancel")]
                 ])
@@ -471,6 +478,36 @@ async def callback_handler(client: Client, query: CallbackQuery):
     elif data == "leech_thumb":
         user_data[user_id]['state'] = 'waiting_thumb'
         await query.message.reply_text("🖼️ Send me the new thumbnail (photo):")
+
+    elif data == "leech_metadata":
+        user_data[user_id]['state'] = 'waiting_metadata'
+        await query.message.reply_text("📝 Send me the new Title (metadata):")
+
+    elif data == "leech_attachment":
+        if user_id in user_data:
+            current_status = user_data[user_id].get('as_document', False)
+            user_data[user_id]['as_document'] = not current_status
+
+            # Refresh menu
+            as_doc = user_data[user_id]['as_document']
+            title = user_data[user_id].get('title', 'Unknown Title')
+            quality = user_data[user_id].get('quality', '1080')
+            display_quality = quality.replace("mp3_", "MP3 ").replace("_", " ") if "mp3" in quality else f"{quality}p"
+
+            text = f"📹 **Content Found**\n\n**Title:** `{title}`\n**Quality:** {display_quality}\n\nSelect an action:"
+
+            buttons = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Rename", callback_data="leech_rename"),
+                 InlineKeyboardButton("🖼️ Set Thumbnail", callback_data="leech_thumb")],
+                [InlineKeyboardButton("📝 Metadata", callback_data="leech_metadata"),
+                 InlineKeyboardButton(f"📂 Attachment: {'ON' if as_doc else 'OFF'}", callback_data="leech_attachment")],
+                [InlineKeyboardButton("🚀 Upload Now", callback_data="leech_upload")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="leech_cancel")]
+            ])
+
+            await query.message.edit_text(text, reply_markup=buttons)
+        else:
+             await query.answer("Session expired.", show_alert=True)
         
     elif data == "leech_upload":
         if user_id not in user_data or 'url' not in user_data[user_id]:
@@ -510,7 +547,9 @@ async def youtube_handler(client: Client, message: Message):
         'thumb_path': None,
         'original_message_id': message.id,
         'user': message.from_user,
-        'quality': '1080' # default fallback
+        'quality': '1080', # default fallback
+        'as_document': False,
+        'metadata_title': None
     }
     
     # Ask for Quality
@@ -611,6 +650,13 @@ async def text_handler(client: Client, message: Message):
         
         await message.reply_text(f"✅ Name set to: `{new_name}`")
 
+    if state == 'waiting_metadata':
+        meta_title = message.text.strip()
+        user_data[user_id]['metadata_title'] = meta_title
+        user_data[user_id]['state'] = 'idle'
+
+        await message.reply_text(f"✅ Metadata Title set to: `{meta_title}`")
+
 @app.on_message(filters.document)
 async def document_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -657,6 +703,8 @@ async def process_download(client: Client, message: Message, data: dict):
     original_msg_id = data.get('original_message_id')
     user = data.get('user', message.from_user) # Fallback to message.from_user if not in data
     quality = data.get('quality', '1080')
+    as_document = data.get('as_document', False)
+    metadata_title = data.get('metadata_title')
     user_id = message.chat.id
 
     # Send processing message
@@ -673,8 +721,9 @@ async def process_download(client: Client, message: Message, data: dict):
     
     # Determine Output Template
     if custom_name:
-        # Sanitize filename
-        safe_name = "".join([c for c in custom_name if c.isalpha() or c.isdigit() or c in " .-_"]).strip()
+        # Sanitize filename (Removed _ and - and others as requested by user to be 'ignored')
+        # Keeping only alphanumeric, space, and dot
+        safe_name = "".join([c for c in custom_name if c.isalpha() or c.isdigit() or c in " ."]).strip()
         output_template = f"downloads/{timestamp}/{safe_name}.%(ext)s"
     else:
         output_template = f"downloads/{timestamp}/%(title)s.%(ext)s"
@@ -709,6 +758,7 @@ async def process_download(client: Client, message: Message, data: dict):
         # Determine which thumbnail to use
         # 1. Custom thumb if provided
         # 2. Downloaded thumb from yt-dlp (if auto_thumb is True)
+        # 3. Extract from video if auto_thumb is True and no other thumb found
         thumb_to_use = None
         
         if custom_thumb and os.path.exists(custom_thumb):
@@ -722,16 +772,30 @@ async def process_download(client: Client, message: Message, data: dict):
         video_files = glob.glob(f"{files_path}*.mp4")
         audio_files = glob.glob(f"{files_path}*.mp3")
         
+        # If no thumbnail found and it's a video, try to extract one
+        if not thumb_to_use and auto_thumb and video_files:
+            try:
+                v_path = video_files[0]
+                generated_thumb = f"{files_path}auto_thumb.jpg"
+                # Extract frame at 1 second
+                subprocess.run(
+                    ["ffmpeg", "-i", v_path, "-ss", "00:00:01", "-vframes", "1", generated_thumb],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+                )
+                if os.path.exists(generated_thumb):
+                    thumb_to_use = generated_thumb
+            except Exception as e:
+                print(f"Error extracting thumbnail: {e}")
+
         # Construct Caption
-        final_title = custom_name if custom_name else title
+        # Use metadata_title if set, else custom_name (if set), else original title
+        final_title = metadata_title if metadata_title else (custom_name if custom_name else title)
         # Use user.mention for a proper clickable link
         mention = user.mention if user else "Unknown"
         
         if video_files:
             video_path = video_files[0]
             # Get languages if available, else default to 'English/Unknown'
-            # yt-dlp info might have 'language' or 'requested_subtitles' etc but often it is hard to determine precisely for video file if not in info.
-            # However, info dict usually has 'language' field if available.
             languages = info.get('language') or "English"
             file_size = os.path.getsize(video_path)
 
@@ -744,20 +808,31 @@ async def process_download(client: Client, message: Message, data: dict):
 
             # Start timer for progress
             start_time = time.time()
-            await status_msg.edit_text("⬆️ Uploading Video to Telegram...")
 
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=video_path,
-                caption=caption,
-                duration=duration,
-                width=width,
-                height=height,
-                thumb=thumb_to_use,
-                supports_streaming=True,
-                progress=progress_for_pyrogram,
-                progress_args=("⬆️ Uploading Video...", status_msg, start_time, check_cancel)
-            )
+            if as_document:
+                await status_msg.edit_text("⬆️ Uploading Document to Telegram...")
+                await client.send_document(
+                    chat_id=message.chat.id,
+                    document=video_path,
+                    caption=caption,
+                    thumb=thumb_to_use,
+                    progress=progress_for_pyrogram,
+                    progress_args=("⬆️ Uploading Document...", status_msg, start_time, check_cancel)
+                )
+            else:
+                await status_msg.edit_text("⬆️ Uploading Video to Telegram...")
+                await client.send_video(
+                    chat_id=message.chat.id,
+                    video=video_path,
+                    caption=caption,
+                    duration=duration,
+                    width=width,
+                    height=height,
+                    thumb=thumb_to_use,
+                    supports_streaming=True,
+                    progress=progress_for_pyrogram,
+                    progress_args=("⬆️ Uploading Video...", status_msg, start_time, check_cancel)
+                )
 
         elif audio_files:
             audio_path = audio_files[0]
@@ -773,19 +848,30 @@ async def process_download(client: Client, message: Message, data: dict):
             )
 
             start_time = time.time()
-            await status_msg.edit_text("⬆️ Uploading Audio to Telegram...")
 
-            await client.send_audio(
-                chat_id=message.chat.id,
-                audio=audio_path,
-                caption=caption,
-                duration=duration,
-                performer=info.get('uploader'),
-                title=final_title,
-                thumb=thumb_to_use,
-                progress=progress_for_pyrogram,
-                progress_args=("⬆️ Uploading Audio...", status_msg, start_time, check_cancel)
-            )
+            if as_document:
+                await status_msg.edit_text("⬆️ Uploading Document to Telegram...")
+                await client.send_document(
+                    chat_id=message.chat.id,
+                    document=audio_path,
+                    caption=caption,
+                    thumb=thumb_to_use,
+                    progress=progress_for_pyrogram,
+                    progress_args=("⬆️ Uploading Document...", status_msg, start_time, check_cancel)
+                )
+            else:
+                await status_msg.edit_text("⬆️ Uploading Audio to Telegram...")
+                await client.send_audio(
+                    chat_id=message.chat.id,
+                    audio=audio_path,
+                    caption=caption,
+                    duration=duration,
+                    performer=info.get('uploader'),
+                    title=final_title,
+                    thumb=thumb_to_use,
+                    progress=progress_for_pyrogram,
+                    progress_args=("⬆️ Uploading Audio...", status_msg, start_time, check_cancel)
+                )
 
         else:
             await status_msg.edit_text("❌ Error: Could not find downloaded file.")
@@ -896,6 +982,38 @@ async def cleanup_sessions_task():
 
         await asyncio.sleep(60) # Run every minute
 
+async def cleanup_downloads_task():
+    """
+    Cleans up the 'downloads' folder.
+    Checks every hour, deletes folders older than 24 hours.
+    """
+    while True:
+        try:
+            print("Running cleanup check...")
+            current_time = time.time()
+            if os.path.exists("downloads"):
+                for entry in os.scandir("downloads"):
+                    if entry.is_dir():
+                        try:
+                            # entry.name should be timestamp
+                            timestamp = float(entry.name)
+                            if current_time - timestamp > 86400: # 24 hours
+                                shutil.rmtree(entry.path, ignore_errors=True)
+                                print(f"Cleaned up: {entry.path}")
+                        except ValueError:
+                            # Not a timestamp folder, maybe temp? Check modified time
+                            if current_time - entry.stat().st_mtime > 86400:
+                                shutil.rmtree(entry.path, ignore_errors=True)
+                                print(f"Cleaned up: {entry.path}")
+                        except Exception as e:
+                            print(f"Error cleaning {entry.path}: {e}")
+
+            # Check every hour
+            await asyncio.sleep(3600)
+        except Exception as e:
+            print(f"Error in cleanup task: {e}")
+            await asyncio.sleep(3600) # Wait a bit before retrying if error
+
 async def start_web_server():
     server = web.Application()
     server.router.add_get("/", web_handler)
@@ -918,8 +1036,9 @@ async def main():
     await app.start()
     await start_web_server()
 
-    # Start background cleanup task
+    # Start background cleanup tasks
     asyncio.create_task(cleanup_sessions_task())
+    asyncio.create_task(cleanup_downloads_task())
 
     await idle()
     await app.stop()
