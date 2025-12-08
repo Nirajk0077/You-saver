@@ -56,14 +56,27 @@ class AuthSession:
                 if "Couldn't find your Google Account" in content or "Enter a valid email" in content:
                     return False, "Error: Couldn't find your Google Account or invalid email."
 
+                # Verify password field is actually visible before proceeding
+                try:
+                    await self.page.wait_for_selector('input[type="password"]', state='visible', timeout=5000)
+                except:
+                    # If not visible yet, check if it's because of an error we missed
+                    if "Enter a valid email" in await self.page.content():
+                        return False, "Error: Invalid email."
+                    return False, "Email accepted, but password field not found/visible."
+
                 self.step = "password"
                 return True, "Email accepted. Please enter password."
             except Exception as e:
                 # If timeout, maybe it was successful but page structure is different, or slow internet
-                # Let's check if password field exists
-                if await self.page.locator('input[type="password"]').count() > 0:
-                     self.step = "password"
-                     return True, "Email accepted. Please enter password."
+                # Let's check if password field exists and is visible
+                try:
+                    if await self.page.locator('input[type="password"]').count() > 0:
+                        await self.page.wait_for_selector('input[type="password"]', state='visible', timeout=5000)
+                        self.step = "password"
+                        return True, "Email accepted. Please enter password."
+                except:
+                    pass
                 return False, f"Timeout or error waiting for password field: {str(e)}"
 
         except Exception as e:
@@ -71,7 +84,7 @@ class AuthSession:
 
     async def enter_password(self, password):
         try:
-            await self.page.fill('input[type="password"]', password)
+            await self.page.fill('input[type="password"]:visible', password)
             await self.page.click('#passwordNext')
 
             # Wait for navigation or 2FA prompt
