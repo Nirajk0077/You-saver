@@ -26,6 +26,10 @@ user_settings = {}
 # user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'quality': str} }
 user_data = {}
 
+# Premium States
+premium_users = set()
+premium_mode_enabled = False
+
 def get_user_setting(user_id, key, default):
     if user_id not in user_settings:
         user_settings[user_id] = {}
@@ -43,23 +47,48 @@ def progress_hook(d):
 def download_video_sync(url, output_path, quality, writethumbnail=True):
     """
     Synchronous wrapper for yt-dlp download to be run in an executor.
-    Quality should be '1080', '720', '480', or '360'.
+    Quality should be '1080', '720', '480', '360' or 'mp3_...'.
     """
-    # Default to 1080 if invalid
-    if quality not in ['1080', '720', '480', '360']:
-        quality = '1080'
-    
-    format_str = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
-    
     ydl_opts = {
-        'format': format_str,
         'outtmpl': output_path,
         'writethumbnail': writethumbnail,
-        'merge_output_format': 'mp4',
         'quiet': True,
         'progress_hooks': [progress_hook],
         'noplaylist': True,
     }
+
+    if 'mp3' in quality:
+        # Audio Mode
+        if 'fast' in quality:
+            # Fast 128k - best audio, no force re-encode unless needed, prefer 128k range
+            ydl_opts['format'] = 'bestaudio/best'
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '128',
+            }]
+        else:
+            # Classic MP3 - Force re-encode to specific bitrate
+            # set_quality_mp3_70 -> 70
+            bitrate = quality.split('_')[-1]
+            if not bitrate.isdigit():
+                bitrate = '128'
+
+            ydl_opts['format'] = 'bestaudio/best'
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': bitrate,
+            }]
+    else:
+        # Video Mode
+        # Default to 1080 if invalid
+        if quality not in ['1080', '720', '480', '360']:
+            quality = '1080'
+
+        format_str = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+        ydl_opts['format'] = format_str
+        ydl_opts['merge_output_format'] = 'mp4'
 
     if os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
@@ -140,7 +169,29 @@ async def start_handler(client: Client, message: Message):
     )
     
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
+        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
+        [InlineKeyboardButton("💎 Premium Plan", callback_data="show_plan")]
+    ])
+
+    await message.reply_text(text, reply_markup=buttons)
+
+@app.on_message(filters.command("plan") & filters.private)
+async def plan_command(client: Client, message: Message):
+    text = (
+        f"💎 **Premium Plan**\n\n"
+        f"Upgrade to premium to access exclusive features!\n\n"
+        f"**Pricing:**\n"
+        f"• 7 Days - 59₹\n"
+        f"• 15 Days - 99₹\n"
+        f"• 30 Days - 169₹\n\n"
+        f"**Owner UPI ID:** `{Config.UPI_ID}`\n\n"
+        "Click the button below to pay via UPI QR Code or Contact Owner."
+    )
+
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💸 Pay Now / QR Code", url=Config.UPI_PAYMENT_URL)],
+        [InlineKeyboardButton("👤 Contact Owner", url=Config.OWNER_CONTACT_URL)],
+        [InlineKeyboardButton("📸 Send Screenshot", callback_data="send_payment_screenshot")]
     ])
     
     await message.reply_text(text, reply_markup=buttons)
@@ -212,9 +263,60 @@ async def callback_handler(client: Client, query: CallbackQuery):
     elif data == "close_settings":
         await query.message.delete()
         
+    elif data == "show_plan":
+        text = (
+            f"💎 **Premium Plan**\n\n"
+            f"Upgrade to premium to access exclusive features!\n\n"
+            f"**Pricing:**\n"
+            f"• 7 Days - 59₹\n"
+            f"• 15 Days - 99₹\n"
+            f"• 30 Days - 169₹\n\n"
+            f"**Owner UPI ID:** `{Config.UPI_ID}`\n\n"
+            "Click the button below to pay via UPI QR Code or Contact Owner."
+        )
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💸 Pay Now / QR Code", url=Config.UPI_PAYMENT_URL)],
+            [InlineKeyboardButton("👤 Contact Owner", url=Config.OWNER_CONTACT_URL)],
+            [InlineKeyboardButton("📸 Send Screenshot", callback_data="send_payment_screenshot")],
+            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
+        ])
+        await query.message.edit_text(text, reply_markup=buttons)
+
+    elif data == "send_payment_screenshot":
+        user_data[user_id]['state'] = 'waiting_payment_screenshot'
+        await query.message.reply_text("📸 **Send Screenshot**\n\nPlease send the payment screenshot now so we can verify your premium plan.")
+
+    elif data == "show_mp3_options":
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Fast 128k", callback_data="set_quality_mp3_fast_128")],
+            [InlineKeyboardButton("Classic MP3 70k", callback_data="set_quality_mp3_70")],
+            [InlineKeyboardButton("Classic MP3 128k", callback_data="set_quality_mp3_128")],
+            [InlineKeyboardButton("Classic MP3 160k", callback_data="set_quality_mp3_160")],
+            [InlineKeyboardButton("Classic MP3 320k", callback_data="set_quality_mp3_320")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_quality")]
+        ])
+        await query.message.edit_text("🎵 **Select MP3 Quality:**", reply_markup=buttons)
+
+    elif data == "back_to_quality":
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("1080p", callback_data="set_quality_1080"),
+             InlineKeyboardButton("720p", callback_data="set_quality_720")],
+            [InlineKeyboardButton("480p", callback_data="set_quality_480"),
+             InlineKeyboardButton("360p", callback_data="set_quality_360")],
+            [InlineKeyboardButton("🎵 MP3", callback_data="show_mp3_options")]
+        ])
+        await query.message.edit_text("📹 **Select Quality:**", reply_markup=buttons)
+
     elif data.startswith("set_quality_"):
         # Quality selected, proceed
-        quality = data.split("_")[2]
+        parts = data.split("_")
+        if len(parts) > 3: # set_quality_mp3_...
+            # e.g. set_quality_mp3_fast_128 -> mp3_fast_128
+            # e.g. set_quality_mp3_320 -> mp3_320
+            quality = "_".join(parts[2:])
+        else:
+            quality = parts[2]
+
         user_data[user_id]['quality'] = quality
         
         url = user_data[user_id].get('url')
@@ -232,7 +334,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 del user_data[user_id]
         else:
             # Leech Mode: Fetch info and show menu
-            await query.message.edit_text("🔎 Fetching video info...")
+            await query.message.edit_text("🔎 Fetching info...")
             try:
                 loop = asyncio.get_running_loop()
                 info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url))
@@ -241,7 +343,9 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 user_data[user_id]['title'] = title
                 user_data[user_id]['state'] = 'idle'
                 
-                text = f"📹 **Video Found**\n\n**Title:** `{title}`\n**Quality:** {quality}p\n\nSelect an action:"
+                display_quality = quality.replace("mp3_", "MP3 ").replace("_", " ") if "mp3" in quality else f"{quality}p"
+
+                text = f"📹 **Content Found**\n\n**Title:** `{title}`\n**Quality:** {display_quality}\n\nSelect an action:"
                 
                 buttons = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✏️ Rename", callback_data="leech_rename"),
@@ -284,6 +388,18 @@ async def callback_handler(client: Client, query: CallbackQuery):
 async def youtube_handler(client: Client, message: Message):
     user_id = message.from_user.id
     
+    # Check Premium Access
+    if premium_mode_enabled and user_id not in premium_users and user_id != Config.OWNER_ID:
+        await message.reply_text(
+            "🔒 **Premium Access Required**\n\n"
+            "This bot is currently in Premium Mode. You need a premium plan to use it.\n"
+            "Click below to view plans.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 View Plans", callback_data="show_plan")]
+            ])
+        )
+        return
+
     # Extract URL
     regex = r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/[^\s]+"
     match = re.search(regex, message.text)
@@ -308,10 +424,11 @@ async def youtube_handler(client: Client, message: Message):
         [InlineKeyboardButton("1080p", callback_data="set_quality_1080"),
          InlineKeyboardButton("720p", callback_data="set_quality_720")],
         [InlineKeyboardButton("480p", callback_data="set_quality_480"),
-         InlineKeyboardButton("360p", callback_data="set_quality_360")]
+         InlineKeyboardButton("360p", callback_data="set_quality_360")],
+        [InlineKeyboardButton("🎵 MP3", callback_data="show_mp3_options")]
     ])
     
-    await message.reply_text("📹 **Select Video Quality:**", reply_markup=buttons)
+    await message.reply_text("📹 **Select Quality:**", reply_markup=buttons)
 
 # Generic text handler (runs after specific handlers)
 @app.on_message(filters.text & filters.private)
@@ -337,6 +454,70 @@ async def text_handler(client: Client, message: Message):
         user_data[user_id]['state'] = 'idle'
         
         await message.reply_text(f"✅ Name set to: `{new_name}`")
+
+@app.on_message(filters.command("add_user") & filters.private)
+async def add_user_command(client: Client, message: Message):
+    user_id = message.from_user.id
+    if user_id != Config.OWNER_ID:
+        return
+
+    if len(message.command) < 2:
+        await message.reply_text("Usage: /add_user <user_id>")
+        return
+
+    try:
+        target_user_id = int(message.command[1])
+        premium_users.add(target_user_id)
+        await message.reply_text(f"✅ User `{target_user_id}` added to Premium.")
+
+        # Log to Channel
+        if Config.LOG_CHANNEL:
+            try:
+                await client.send_message(
+                    Config.LOG_CHANNEL,
+                    f"💎 **Premium User Added**\n\nUser ID: `{target_user_id}`\nAdded By: {message.from_user.mention}"
+                )
+            except Exception as e:
+                await message.reply_text(f"⚠️ Failed to log: {e}")
+
+    except ValueError:
+        await message.reply_text("❌ Invalid User ID.")
+
+@app.on_message(filters.command("premium_on") & filters.private)
+async def premium_on_command(client: Client, message: Message):
+    global premium_mode_enabled
+    if message.from_user.id != Config.OWNER_ID:
+        return
+
+    premium_mode_enabled = True
+    await message.reply_text("💎 **Premium Mode ENABLED**\nOnly premium users can use the bot now.")
+
+    if Config.LOG_CHANNEL:
+        try:
+            await client.send_message(
+                Config.LOG_CHANNEL,
+                f"🔒 **Premium Mode Enabled**\nBy: {message.from_user.mention}"
+            )
+        except:
+            pass
+
+@app.on_message(filters.command("premium_off") & filters.private)
+async def premium_off_command(client: Client, message: Message):
+    global premium_mode_enabled
+    if message.from_user.id != Config.OWNER_ID:
+        return
+
+    premium_mode_enabled = False
+    await message.reply_text("🔓 **Premium Mode DISABLED**\nEveryone can use the bot now.")
+
+    if Config.LOG_CHANNEL:
+        try:
+            await client.send_message(
+                Config.LOG_CHANNEL,
+                f"🔓 **Premium Mode Disabled**\nBy: {message.from_user.mention}"
+            )
+        except:
+            pass
 
 @app.on_message(filters.document & filters.private)
 async def document_handler(client: Client, message: Message):
@@ -366,7 +547,9 @@ async def document_handler(client: Client, message: Message):
 @app.on_message(filters.photo & filters.private)
 async def photo_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    if user_id in user_data and user_data[user_id].get('state') == 'waiting_thumb':
+    state = user_data.get(user_id, {}).get('state')
+
+    if state == 'waiting_thumb':
         msg = await message.reply_text("⬇️ Downloading thumbnail...")
         path = await message.download(file_name=f"downloads/thumbs/{user_id}.jpg")
         
@@ -374,6 +557,25 @@ async def photo_handler(client: Client, message: Message):
         user_data[user_id]['state'] = 'idle'
         
         await msg.edit_text("✅ Thumbnail set.")
+        return
+
+    if state == 'waiting_payment_screenshot':
+        await message.reply_text("✅ **Screenshot Received**\n\nYour payment screenshot has been sent to the owner for verification. Please wait for approval.")
+
+        user_data[user_id]['state'] = 'idle'
+
+        # Log to Channel or Notify Owner
+        target_chat_id = Config.LOG_CHANNEL if Config.LOG_CHANNEL else Config.OWNER_ID
+        if target_chat_id:
+            try:
+                caption = (
+                    f"📸 **New Payment Screenshot**\n\n"
+                    f"👤 **User:** {message.from_user.mention} (`{user_id}`)\n"
+                    f"📅 **Date:** {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                await message.copy(chat_id=target_chat_id, caption=caption)
+            except Exception as e:
+                print(f"Failed to forward screenshot: {e}")
 
 async def process_download(client: Client, message: Message, data: dict):
     """
@@ -416,7 +618,6 @@ async def process_download(client: Client, message: Message, data: dict):
         height = info.get('height', 0)
         
         files_path = f"downloads/{timestamp}/"
-        video_files = glob.glob(f"{files_path}*.mp4")
         
         # Determine which thumbnail to use
         # 1. Custom thumb if provided
@@ -430,30 +631,50 @@ async def process_download(client: Client, message: Message, data: dict):
             if thumb_files:
                 thumb_to_use = thumb_files[0]
 
-        if not video_files:
-            await status_msg.edit_text("❌ Error: Could not find downloaded video file.")
-            return
-        
-        video_path = video_files[0]
+        # Check for Video or Audio
+        video_files = glob.glob(f"{files_path}*.mp4")
+        audio_files = glob.glob(f"{files_path}*.mp3")
         
         # Construct Caption
         final_title = custom_name if custom_name else title
         # Use user.mention for a proper clickable link
         mention = user.mention if user else "Unknown"
-        caption = f"🎥 **{final_title}**\n**Quality:** {quality}p\n\n👤 **Requested by:** {mention}"
         
-        await status_msg.edit_text("⬆️ Uploading to Telegram...")
-        
-        await client.send_video(
-            chat_id=message.chat.id,
-            video=video_path,
-            caption=caption,
-            duration=duration,
-            width=width,
-            height=height,
-            thumb=thumb_to_use,
-            supports_streaming=True
-        )
+        if video_files:
+            video_path = video_files[0]
+            caption = f"🎥 **{final_title}**\n**Quality:** {quality}p\n\n👤 **Requested by:** {mention}"
+            await status_msg.edit_text("⬆️ Uploading Video to Telegram...")
+
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=video_path,
+                caption=caption,
+                duration=duration,
+                width=width,
+                height=height,
+                thumb=thumb_to_use,
+                supports_streaming=True
+            )
+
+        elif audio_files:
+            audio_path = audio_files[0]
+            display_quality = quality.replace("mp3_", "MP3 ").replace("_", " ")
+            caption = f"🎵 **{final_title}**\n**Quality:** {display_quality}\n\n👤 **Requested by:** {mention}"
+            await status_msg.edit_text("⬆️ Uploading Audio to Telegram...")
+
+            await client.send_audio(
+                chat_id=message.chat.id,
+                audio=audio_path,
+                caption=caption,
+                duration=duration,
+                performer=info.get('uploader'),
+                title=final_title,
+                thumb=thumb_to_use
+            )
+
+        else:
+            await status_msg.edit_text("❌ Error: Could not find downloaded file.")
+            return
         
         await status_msg.delete()
         
