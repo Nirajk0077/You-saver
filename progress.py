@@ -23,10 +23,10 @@ def time_formatter(milliseconds: int) -> str:
         ((str(seconds) + "s") if seconds else "")
     return tmp[:-2] if tmp else "0s"
 
-async def progress_for_pyrogram(current, total, ud_type, message, start):
+async def progress_for_pyrogram(current, total, ud_type, message, start, force=False):
     now = time.time()
     diff = now - start
-    if round(diff % 5.00) == 0 or current == total:
+    if force or round(diff % 5.00) == 0 or current == total:
         if total == 0:
              return
         percentage = current * 100 / total
