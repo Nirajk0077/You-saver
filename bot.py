@@ -29,6 +29,8 @@ user_settings = {}
 user_data = {}
 # active_logins = { user_id: AuthSession }
 active_logins = {}
+# cancel_processes = { message_id: bool }
+cancel_processes = {}
 
 def save_cookies_globally(user_id, content):
     """Saves cookies to user-specific file and global cookies.txt"""
@@ -57,13 +59,17 @@ def set_user_setting(user_id, key, value):
     user_settings[user_id][key] = value
 
 class DownloadProgressHook:
-    def __init__(self, start_time=None, loop=None, status_msg=None):
+    def __init__(self, start_time=None, loop=None, status_msg=None, check_cancel=None):
         self.start_time = start_time
         self.loop = loop
         self.status_msg = status_msg
+        self.check_cancel = check_cancel
         self.last_update = 0
 
     def __call__(self, d):
+        if self.check_cancel and self.check_cancel():
+            raise Exception("Cancelled by user")
+
         if d['status'] == 'finished':
             print('Download finished, now converting ...')
 
@@ -82,6 +88,7 @@ class DownloadProgressHook:
                             "⬇️ Downloading...",
                             self.status_msg,
                             self.start_time,
+                            self.check_cancel,
                             force=True
                         ),
                         self.loop
@@ -321,6 +328,26 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
     elif data == "close_settings":
         await query.message.delete()
+
+    elif data == "refresh_status":
+        await query.answer("🔄 Process is running...", show_alert=False)
+
+    elif data.startswith("cancel_dl_"):
+        try:
+            # data format: cancel_dl_{chat_id}_{message_id}
+            parts = data.split("_")
+            chat_id = int(parts[-2])
+            msg_id = int(parts[-1])
+            cancel_key = f"{chat_id}_{msg_id}"
+
+            if cancel_key in cancel_processes:
+                cancel_processes[cancel_key] = True
+                await query.answer("Cancelling...", show_alert=True)
+                await query.message.edit_text("❌ Cancelling operation...")
+            else:
+                await query.answer("Process not active or already cancelled.", show_alert=True)
+        except:
+             await query.answer("Error processing cancellation.", show_alert=True)
         
     elif data == "show_mp3_options":
         buttons = InlineKeyboardMarkup([
@@ -597,6 +624,13 @@ async def process_download(client: Client, message: Message, data: dict):
     # Send processing message
     status_msg = await client.send_message(message.chat.id, f"⬇️ Downloading video ({quality}p)...")
     
+    # Initialize cancellation
+    cancel_key = f"{message.chat.id}_{status_msg.id}"
+    cancel_processes[cancel_key] = False
+
+    def check_cancel():
+        return cancel_processes.get(cancel_key, False)
+
     timestamp = int(time.time())
     
     # Determine Output Template
@@ -621,7 +655,7 @@ async def process_download(client: Client, message: Message, data: dict):
         download_start = time.time()
         info = await loop.run_in_executor(
             None, 
-            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=True, cookiefile=cookiefile, progress_args=(download_start, loop, status_msg))
+            functools.partial(download_video_sync, url, output_template, quality, writethumbnail=True, cookiefile=cookiefile, progress_args=(download_start, loop, status_msg, check_cancel))
         )
         
         title = info.get('title', 'Unknown Title')
@@ -681,7 +715,7 @@ async def process_download(client: Client, message: Message, data: dict):
                 thumb=thumb_to_use,
                 supports_streaming=True,
                 progress=progress_for_pyrogram,
-                progress_args=("⬆️ Uploading Video...", status_msg, start_time)
+                progress_args=("⬆️ Uploading Video...", status_msg, start_time, check_cancel)
             )
 
         elif audio_files:
@@ -709,7 +743,7 @@ async def process_download(client: Client, message: Message, data: dict):
                 title=final_title,
                 thumb=thumb_to_use,
                 progress=progress_for_pyrogram,
-                progress_args=("⬆️ Uploading Audio...", status_msg, start_time)
+                progress_args=("⬆️ Uploading Audio...", status_msg, start_time, check_cancel)
             )
 
         else:
@@ -730,6 +764,10 @@ async def process_download(client: Client, message: Message, data: dict):
         await status_msg.edit_text(f"❌ Error: {str(e)}")
     
     finally:
+        # Cleanup cancellation key
+        if 'cancel_key' in locals() and cancel_key in cancel_processes:
+            del cancel_processes[cancel_key]
+
         # Cleanup download folder
         if os.path.exists(f"downloads/{timestamp}"):
             shutil.rmtree(f"downloads/{timestamp}", ignore_errors=True)

@@ -1,5 +1,7 @@
 import math
 import time
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import StopTransmission
 
 def humanbytes(size):
     if not size:
@@ -23,7 +25,10 @@ def time_formatter(milliseconds: int) -> str:
         ((str(seconds) + "s") if seconds else "")
     return tmp[:-2] if tmp else "0s"
 
-async def progress_for_pyrogram(current, total, ud_type, message, start, force=False):
+async def progress_for_pyrogram(current, total, ud_type, message, start, check_cancel=None, force=False):
+    if check_cancel and check_cancel():
+        raise StopTransmission
+
     now = time.time()
     diff = now - start
     if force or round(diff % 5.00) == 0 or current == total:
@@ -48,12 +53,21 @@ async def progress_for_pyrogram(current, total, ud_type, message, start, force=F
             humanbytes(speed),
             estimated_total_time if estimated_total_time != '' else "0s"
         )
+
+        buttons = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_dl_{message.chat.id}_{message.id}")
+            ]
+        ])
+
         try:
             await message.edit(
                 text="{}\n{}".format(
                     ud_type,
                     tmp
-                )
+                ),
+                reply_markup=buttons
             )
         except:
             pass
