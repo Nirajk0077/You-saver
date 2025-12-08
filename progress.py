@@ -1,7 +1,7 @@
 import math
 import time
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import StopTransmission
+from pyrogram import StopTransmission
 
 def humanbytes(size):
     if not size:
