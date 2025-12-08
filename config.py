@@ -8,3 +8,4 @@ class Config:
     LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "0"))
     UPI_ID = os.environ.get("UPI_ID", "username@upi")
     UPI_PAYMENT_URL = os.environ.get("UPI_PAYMENT_URL", "https://example.com/qr")
+    OWNER_CONTACT_URL = os.environ.get("OWNER_CONTACT_URL", "https://t.me/username")

@@ -180,12 +180,18 @@ async def plan_command(client: Client, message: Message):
     text = (
         f"💎 **Premium Plan**\n\n"
         f"Upgrade to premium to access exclusive features!\n\n"
+        f"**Pricing:**\n"
+        f"• 7 Days - 59₹\n"
+        f"• 15 Days - 99₹\n"
+        f"• 30 Days - 169₹\n\n"
         f"**Owner UPI ID:** `{Config.UPI_ID}`\n\n"
-        "Click the button below to pay via UPI QR Code."
+        "Click the button below to pay via UPI QR Code or Contact Owner."
     )
 
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💸 Pay Now / QR Code", url=Config.UPI_PAYMENT_URL)]
+        [InlineKeyboardButton("💸 Pay Now / QR Code", url=Config.UPI_PAYMENT_URL)],
+        [InlineKeyboardButton("👤 Contact Owner", url=Config.OWNER_CONTACT_URL)],
+        [InlineKeyboardButton("📸 Send Screenshot", callback_data="send_payment_screenshot")]
     ])
     
     await message.reply_text(text, reply_markup=buttons)
@@ -261,14 +267,24 @@ async def callback_handler(client: Client, query: CallbackQuery):
         text = (
             f"💎 **Premium Plan**\n\n"
             f"Upgrade to premium to access exclusive features!\n\n"
+            f"**Pricing:**\n"
+            f"• 7 Days - 59₹\n"
+            f"• 15 Days - 99₹\n"
+            f"• 30 Days - 169₹\n\n"
             f"**Owner UPI ID:** `{Config.UPI_ID}`\n\n"
-            "Click the button below to pay via UPI QR Code."
+            "Click the button below to pay via UPI QR Code or Contact Owner."
         )
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("💸 Pay Now / QR Code", url=Config.UPI_PAYMENT_URL)],
+            [InlineKeyboardButton("👤 Contact Owner", url=Config.OWNER_CONTACT_URL)],
+            [InlineKeyboardButton("📸 Send Screenshot", callback_data="send_payment_screenshot")],
             [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
         ])
         await query.message.edit_text(text, reply_markup=buttons)
+
+    elif data == "send_payment_screenshot":
+        user_data[user_id]['state'] = 'waiting_payment_screenshot'
+        await query.message.reply_text("📸 **Send Screenshot**\n\nPlease send the payment screenshot now so we can verify your premium plan.")
 
     elif data == "show_mp3_options":
         buttons = InlineKeyboardMarkup([
@@ -531,7 +547,9 @@ async def document_handler(client: Client, message: Message):
 @app.on_message(filters.photo & filters.private)
 async def photo_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    if user_id in user_data and user_data[user_id].get('state') == 'waiting_thumb':
+    state = user_data.get(user_id, {}).get('state')
+
+    if state == 'waiting_thumb':
         msg = await message.reply_text("⬇️ Downloading thumbnail...")
         path = await message.download(file_name=f"downloads/thumbs/{user_id}.jpg")
         
@@ -539,6 +557,25 @@ async def photo_handler(client: Client, message: Message):
         user_data[user_id]['state'] = 'idle'
         
         await msg.edit_text("✅ Thumbnail set.")
+        return
+
+    if state == 'waiting_payment_screenshot':
+        await message.reply_text("✅ **Screenshot Received**\n\nYour payment screenshot has been sent to the owner for verification. Please wait for approval.")
+
+        user_data[user_id]['state'] = 'idle'
+
+        # Log to Channel or Notify Owner
+        target_chat_id = Config.LOG_CHANNEL if Config.LOG_CHANNEL else Config.OWNER_ID
+        if target_chat_id:
+            try:
+                caption = (
+                    f"📸 **New Payment Screenshot**\n\n"
+                    f"👤 **User:** {message.from_user.mention} (`{user_id}`)\n"
+                    f"📅 **Date:** {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                await message.copy(chat_id=target_chat_id, caption=caption)
+            except Exception as e:
+                print(f"Failed to forward screenshot: {e}")
 
 async def process_download(client: Client, message: Message, data: dict):
     """
