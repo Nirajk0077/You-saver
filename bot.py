@@ -335,7 +335,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
         await query.message.reply_text("❌ Operation cancelled.")
 
 # Registered before generic text_handler to ensure priority
-@app.on_message(filters.regex(r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/") & filters.private)
+@app.on_message(filters.regex(r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/"))
 async def youtube_handler(client: Client, message: Message):
     user_id = message.from_user.id
     
@@ -370,7 +370,7 @@ async def youtube_handler(client: Client, message: Message):
     await message.reply_text("📹 **Select Quality:**", reply_markup=buttons)
 
 # Generic text handler (runs after specific handlers)
-@app.on_message(filters.text & filters.private)
+@app.on_message(filters.text)
 async def text_handler(client: Client, message: Message):
     user_id = message.from_user.id
     state = user_data.get(user_id, {}).get('state')
@@ -394,7 +394,7 @@ async def text_handler(client: Client, message: Message):
         
         await message.reply_text(f"✅ Name set to: `{new_name}`")
 
-@app.on_message(filters.document & filters.private)
+@app.on_message(filters.document)
 async def document_handler(client: Client, message: Message):
     user_id = message.from_user.id
     state = user_data.get(user_id, {}).get('state')
@@ -419,7 +419,7 @@ async def document_handler(client: Client, message: Message):
                 del user_data[user_id]
         return
 
-@app.on_message(filters.photo & filters.private)
+@app.on_message(filters.photo)
 async def photo_handler(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id in user_data and user_data[user_id].get('state') == 'waiting_thumb':
