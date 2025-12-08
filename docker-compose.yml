@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: youtube_downloader_bot
+    restart: always
+    environment:
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
+      - BOT_TOKEN=${BOT_TOKEN}
+      - PORT=8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./cookies:/app/cookies
+      - ./downloads:/app/downloads
