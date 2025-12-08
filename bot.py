@@ -15,6 +15,12 @@ from auth_helper import AuthSession
 from progress import progress_for_pyrogram, humanbytes
 
 # Initialize the Client
+# Fix for RuntimeError: There is no current event loop in thread 'MainThread'
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 app = Client(
     "youtube_downloader_bot",
     api_id=Config.API_ID,
