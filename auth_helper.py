@@ -1,6 +1,7 @@
 import asyncio
 import time
 import os
+import re
 from playwright.async_api import async_playwright
 from playwright_stealth.stealth import Stealth
 
@@ -209,8 +210,25 @@ class AuthSession:
                 # 4. CAPTCHA or "Verify it's you"
                 if "Verify it's you" in content or "captcha" in content.lower():
                      self.step = "otp" # Treat as OTP step to allow user to input or just see screenshot
+
+                     # Wait a bit for the challenge number to appear
+                     await asyncio.sleep(2)
+
+                     # Attempt to find the number in the text
+                     current_text = await self.page.inner_text('body')
+
+                     msg = "Google is asking to verify it's you. Check the screenshot."
+
+                     # Check for number match
+                     match = re.search(r"Tap\s+(\d+)", current_text, re.IGNORECASE)
+                     if match:
+                         number = match.group(1)
+                         msg = f"Google is asking to verify it's you. \n\n🔢 **Tap {number} on your phone!**"
+                     elif "Tap Yes" in current_text or "Tap YES" in current_text:
+                         msg = "Google is asking to verify it's you. \n\n✅ **Tap YES on your phone!**"
+
                      screenshot = await self.take_screenshot("verify_its_you")
-                     return True, "Google is asking to verify it's you. Check the screenshot.", "otp", screenshot
+                     return True, msg, "otp", screenshot
 
                 # Fallback: take a screenshot and assume OTP/Waiting
                 self.step = "otp"
