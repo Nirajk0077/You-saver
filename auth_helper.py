@@ -38,6 +38,17 @@ class AuthSession:
 
     async def enter_email(self, email):
         try:
+            # Check if email field is present, if not, reload
+            try:
+                await self.page.wait_for_selector('input[type="email"]', state='visible', timeout=10000)
+            except:
+                # Timed out? Try reloading page once.
+                try:
+                    await self.page.reload()
+                    await self.page.wait_for_selector('input[type="email"]', state='visible', timeout=30000)
+                except Exception as e:
+                    return False, f"Error loading login page: {str(e)}"
+
             await self.page.fill('input[type="email"]', email)
             # Use keyboard press for better reliability
             await self.page.keyboard.press("Enter")
