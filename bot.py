@@ -6,13 +6,15 @@ import re
 import functools
 import shutil
 import json
+import subprocess
 from aiohttp import web
-from pyrogram import Client, filters, idle
+from pyrogram import Client, filters, idle, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from yt_dlp import YoutubeDL
 from config import Config
 from auth_helper import AuthSession
 from progress import progress_for_pyrogram, humanbytes
+from database import db
 
 # Initialize the Client
 app = Client(
@@ -57,6 +59,26 @@ def set_user_setting(user_id, key, value):
     if user_id not in user_settings:
         user_settings[user_id] = {}
     user_settings[user_id][key] = value
+
+async def extract_thumbnail(video_path, output_path):
+    """
+    Extracts a thumbnail from a video using ffmpeg.
+    """
+    try:
+        # Take a snapshot at 00:00:01
+        cmd = [
+            "ffmpeg", "-i", video_path, "-ss", "00:00:01", "-vframes", "1", output_path, "-y"
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+        await process.wait()
+        return os.path.exists(output_path)
+    except Exception as e:
+        print(f"Error extracting thumbnail: {e}")
+        return False
 
 class DownloadProgressHook:
     def __init__(self, start_time=None, loop=None, status_msg=None, check_cancel=None):
@@ -215,6 +237,9 @@ def convert_to_netscape(content):
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
+    if db:
+        await db.add_user(user_id)
+
     leech_status = "✅ ON" if get_user_setting(user_id, 'leech', False) else "❌ OFF"
     
     text = (
@@ -224,11 +249,51 @@ async def start_handler(client: Client, message: Message):
         f"**Current Mode:**\nLeech Mode: {leech_status}"
     )
     
-    buttons = InlineKeyboardMarkup([
+    buttons_list = [
         [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
-    ])
+    ]
+    if Config.CHANNEL_LINK:
+        buttons_list.append([InlineKeyboardButton("Join Channel", url=Config.CHANNEL_LINK)])
+
+    buttons = InlineKeyboardMarkup(buttons_list)
     
     await message.reply_text(text, reply_markup=buttons)
+
+@app.on_message(filters.command("stats") & filters.user(Config.ADMIN_IDS))
+async def stats_command(client: Client, message: Message):
+    if not db:
+        await message.reply_text("Database not configured.")
+        return
+
+    users = await db.total_users_count()
+    await message.reply_text(f"📊 **Bot Statistics**\n\n**Total Users:** {users}")
+
+@app.on_message(filters.command("broadcast") & filters.user(Config.ADMIN_IDS))
+async def broadcast_command(client: Client, message: Message):
+    if not db:
+        await message.reply_text("Database not configured.")
+        return
+
+    if not message.reply_to_message:
+        await message.reply_text("Reply to a message to broadcast it.")
+        return
+
+    users = await db.get_all_users()
+    broadcast_msg = message.reply_to_message
+
+    success = 0
+    failed = 0
+
+    status_msg = await message.reply_text("📣 Broadcast started...")
+
+    async for user in users:
+        try:
+            await broadcast_msg.copy(chat_id=user['id'])
+            success += 1
+        except Exception:
+            failed += 1
+
+    await status_msg.edit_text(f"📣 **Broadcast Completed**\n\n✅ Success: {success}\n❌ Failed: {failed}")
 
 @app.on_message(filters.command("set_cookies") & filters.private)
 async def set_cookies_command(client: Client, message: Message):
@@ -706,9 +771,19 @@ async def process_download(client: Client, message: Message, data: dict):
         
         files_path = f"downloads/{timestamp}/"
         
+        # Check for Video or Audio
+        video_files = glob.glob(f"{files_path}*.mp4")
+        audio_files = glob.glob(f"{files_path}*.mp3")
+
+        # Construct Caption
+        final_title = custom_name if custom_name else title
+        # Use user.mention for a proper clickable link
+        mention = user.mention if user else "Unknown"
+
         # Determine which thumbnail to use
         # 1. Custom thumb if provided
         # 2. Downloaded thumb from yt-dlp (if auto_thumb is True)
+        # 3. ffmpeg extracted thumb (if auto_thumb is True)
         thumb_to_use = None
         
         if custom_thumb and os.path.exists(custom_thumb):
@@ -717,15 +792,12 @@ async def process_download(client: Client, message: Message, data: dict):
             thumb_files = glob.glob(f"{files_path}*.jpg") + glob.glob(f"{files_path}*.webp") + glob.glob(f"{files_path}*.png")
             if thumb_files:
                 thumb_to_use = thumb_files[0]
-
-        # Check for Video or Audio
-        video_files = glob.glob(f"{files_path}*.mp4")
-        audio_files = glob.glob(f"{files_path}*.mp3")
-        
-        # Construct Caption
-        final_title = custom_name if custom_name else title
-        # Use user.mention for a proper clickable link
-        mention = user.mention if user else "Unknown"
+            elif video_files:
+                # Try to extract with ffmpeg
+                video_path = video_files[0]
+                thumb_output = f"{files_path}thumb_ffmpeg.jpg"
+                if await extract_thumbnail(video_path, thumb_output):
+                    thumb_to_use = thumb_output
         
         if video_files:
             video_path = video_files[0]
@@ -746,7 +818,7 @@ async def process_download(client: Client, message: Message, data: dict):
             start_time = time.time()
             await status_msg.edit_text("⬆️ Uploading Video to Telegram...")
 
-            await client.send_video(
+            sent_msg = await client.send_video(
                 chat_id=message.chat.id,
                 video=video_path,
                 caption=caption,
@@ -758,6 +830,13 @@ async def process_download(client: Client, message: Message, data: dict):
                 progress=progress_for_pyrogram,
                 progress_args=("⬆️ Uploading Video...", status_msg, start_time, check_cancel)
             )
+
+            # Log Channel Support
+            if Config.LOG_CHANNEL_ID:
+                try:
+                    await sent_msg.copy(chat_id=Config.LOG_CHANNEL_ID)
+                except Exception as e:
+                    print(f"Failed to copy to log channel: {e}")
 
         elif audio_files:
             audio_path = audio_files[0]
@@ -775,7 +854,7 @@ async def process_download(client: Client, message: Message, data: dict):
             start_time = time.time()
             await status_msg.edit_text("⬆️ Uploading Audio to Telegram...")
 
-            await client.send_audio(
+            sent_msg = await client.send_audio(
                 chat_id=message.chat.id,
                 audio=audio_path,
                 caption=caption,
@@ -786,6 +865,13 @@ async def process_download(client: Client, message: Message, data: dict):
                 progress=progress_for_pyrogram,
                 progress_args=("⬆️ Uploading Audio...", status_msg, start_time, check_cancel)
             )
+
+            # Log Channel Support
+            if Config.LOG_CHANNEL_ID:
+                try:
+                    await sent_msg.copy(chat_id=Config.LOG_CHANNEL_ID)
+                except Exception as e:
+                    print(f"Failed to copy to log channel: {e}")
 
         else:
             await status_msg.edit_text("❌ Error: Could not find downloaded file.")

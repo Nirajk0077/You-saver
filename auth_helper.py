@@ -47,7 +47,7 @@ class AuthSession:
                 # We look for password input or the "couldn't find account" error
                 await self.page.wait_for_selector(
                     'input[type="password"], div[aria-live="assertive"], div[jsname="B34EJ"]',
-                    timeout=10000
+                    timeout=60000
                 )
 
                 # Check for error message
