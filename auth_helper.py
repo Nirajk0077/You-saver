@@ -42,7 +42,6 @@ class AuthSession:
             try:
                 await self.page.wait_for_selector('input[type="email"]', state='visible', timeout=10000)
             except:
-                # Timed out? Try reloading page once.
                 try:
                     await self.page.reload()
                     await self.page.wait_for_selector('input[type="email"]', state='visible', timeout=30000)
@@ -50,17 +49,33 @@ class AuthSession:
                     return False, f"Error loading login page: {str(e)}"
 
             await self.page.fill('input[type="email"]', email)
-            # Use keyboard press for better reliability
-            await self.page.keyboard.press("Enter")
 
-            # Short wait to allow UI to react
-            await asyncio.sleep(2)
+            # Attempt to click Next button using multiple selectors
+            next_clicked = False
+            try:
+                # Try explicit ID first
+                if await self.page.locator('#identifierNext').is_visible():
+                    await self.page.click('#identifierNext')
+                    next_clicked = True
+                # Try finding button by text "Next"
+                elif await self.page.get_by_role("button", name="Next").is_visible():
+                    await self.page.get_by_role("button", name="Next").click()
+                    next_clicked = True
+            except:
+                pass
+
+            if not next_clicked:
+                # Fallback to Enter key
+                await self.page.keyboard.press("Enter")
 
             # Polling loop for Password Field or Errors
+            # Increased total wait time to 90s for very slow renders
             start_time = time.time()
-            while time.time() - start_time < 60:
+            while time.time() - start_time < 90:
                 # 1. Check for Password Field
                 if await self.page.locator('input[type="password"]').is_visible():
+                    # Wait a tiny bit for animation
+                    await asyncio.sleep(1)
                     self.step = "password"
                     return True, "Email accepted. Please enter password."
 
@@ -70,16 +85,23 @@ class AuthSession:
                     return False, "Error: Couldn't find your Google Account."
                 if "Enter a valid email" in content:
                     return False, "Error: Invalid email."
+                if "CAPTCHA" in content or "Verify it's you" in content:
+                    return False, "Error: CAPTCHA or Verification requested. Cannot proceed automatically."
 
-                # 3. Check for "Next" button click retry
-                # If we are still seeing the email input and it's been a while, maybe click "Next" again?
-                # But be careful not to double submit if it's just slow.
-                if time.time() - start_time > 10 and await self.page.locator('input[type="email"]').is_visible():
-                    try:
-                        # Only click if we haven't transitioned
-                        await self.page.click('#identifierNext')
-                    except:
-                        pass
+                # 3. Aggressive Retry Logic
+                # If email input is still visible and enabled, we might be stuck.
+                # Every 10 seconds, try to kick it.
+                if await self.page.locator('input[type="email"]').is_visible():
+                    elapsed = time.time() - start_time
+                    if elapsed > 10 and int(elapsed) % 10 == 0:
+                        # Try pressing Enter again
+                        try:
+                            await self.page.keyboard.press("Enter")
+                            # Or try clicking the button again if found
+                            if await self.page.locator('#identifierNext').is_visible():
+                                await self.page.click('#identifierNext', timeout=1000)
+                        except:
+                            pass
 
                 await asyncio.sleep(1)
 
