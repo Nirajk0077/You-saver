@@ -3,7 +3,6 @@ import time
 import os
 from playwright.async_api import async_playwright
 from playwright_stealth.stealth import Stealth
-import os
 
 class AuthSession:
     def __init__(self, user_id):
@@ -15,6 +14,18 @@ class AuthSession:
         self.step = "init"  # init, email, password, otp, done
         self.last_activity = time.time()
         self.error_msg = None
+
+    async def take_screenshot(self, name_prefix="auth_step"):
+        if not os.path.exists("downloads/screenshots"):
+            os.makedirs("downloads/screenshots", exist_ok=True)
+        path = f"downloads/screenshots/{self.user_id}_{name_prefix}_{int(time.time())}.png"
+        try:
+            if self.page:
+                await self.page.screenshot(path=path)
+                return path
+        except Exception as e:
+            print(f"Screenshot failed: {e}")
+        return None
 
     async def start(self):
         try:
@@ -30,7 +41,7 @@ class AuthSession:
             stealth = Stealth()
             await stealth.apply_stealth_async(self.page)
 
-            await self.page.goto("https://accounts.google.com/ServiceLogin?service=youtube")
+            await self.page.goto("https://accounts.google.com/ServiceLogin?service=youtube", timeout=60000)
             self.step = "email"
             return True, "Launched browser. Please enter your Email."
         except Exception as e:
@@ -43,44 +54,39 @@ class AuthSession:
 
             # Wait for either password input or error
             try:
-                # Wait for password selector or error
-                # We look for password input or the "couldn't find account" error
+                # Increased timeout to 60s for Render
                 await self.page.wait_for_selector(
                     'input[type="password"], div[aria-live="assertive"], div[jsname="B34EJ"]',
-                    timeout=10000
+                    timeout=60000
                 )
 
                 # Check for error message
-                # Sometimes error is in specific divs
                 content = await self.page.content()
                 if "Couldn't find your Google Account" in content or "Enter a valid email" in content:
-                    return False, "Error: Couldn't find your Google Account or invalid email."
+                    screenshot = await self.take_screenshot("email_error")
+                    return False, "Error: Couldn't find your Google Account or invalid email.", screenshot
 
                 # Verify password field is actually visible before proceeding
                 try:
-                    await self.page.wait_for_selector('input[type="password"]', state='visible', timeout=5000)
+                    await self.page.wait_for_selector('input[type="password"]', state='visible', timeout=10000)
                 except:
-                    # If not visible yet, check if it's because of an error we missed
                     if "Enter a valid email" in await self.page.content():
-                        return False, "Error: Invalid email."
-                    return False, "Email accepted, but password field not found/visible."
+                        screenshot = await self.take_screenshot("email_invalid")
+                        return False, "Error: Invalid email.", screenshot
+
+                    # Fallback check
+                    if await self.page.locator('input[type="password"]').count() == 0:
+                         screenshot = await self.take_screenshot("email_unknown_error")
+                         return False, "Email accepted, but password field not found/visible.", screenshot
 
                 self.step = "password"
-                return True, "Email accepted. Please enter password."
+                return True, "Email accepted. Please enter password.", None
             except Exception as e:
-                # If timeout, maybe it was successful but page structure is different, or slow internet
-                # Let's check if password field exists and is visible
-                try:
-                    if await self.page.locator('input[type="password"]').count() > 0:
-                        await self.page.wait_for_selector('input[type="password"]', state='visible', timeout=5000)
-                        self.step = "password"
-                        return True, "Email accepted. Please enter password."
-                except:
-                    pass
-                return False, f"Timeout or error waiting for password field: {str(e)}"
+                screenshot = await self.take_screenshot("email_timeout")
+                return False, f"Timeout or error waiting for password field: {str(e)}", screenshot
 
         except Exception as e:
-            return False, f"Error entering email: {str(e)}"
+            return False, f"Error entering email: {str(e)}", None
 
     async def enter_password(self, password):
         try:
@@ -88,81 +94,88 @@ class AuthSession:
             await self.page.click('#passwordNext')
 
             # Wait for navigation or 2FA prompt
-            await self.page.wait_for_load_state('networkidle')
-            await asyncio.sleep(3) # Extra wait for redirects
+            try:
+                # Wait for multiple possible states: logged in, error, or 2FA challenge
+                # We use a longer timeout (60s)
+                await self.page.wait_for_load_state('networkidle', timeout=60000)
 
-            # Check if we are logged in
-            if "myaccount.google.com" in self.page.url or "youtube.com" in self.page.url:
-                 self.step = "done"
-                 return True, "Logged in!", "done"
+                # Check for specific indicators
+                # 1. Logged in (URL check)
+                if "myaccount.google.com" in self.page.url or "youtube.com" in self.page.url:
+                     self.step = "done"
+                     return True, "Logged in!", "done", None
 
-            # Check for error (wrong password)
-            content = await self.page.content()
-            if "Wrong password" in content or "Enter a password" in content:
-                 return False, "Error: Wrong password.", "password"
+                # 2. Wrong password
+                content = await self.page.content()
+                if "Wrong password" in content or "Enter a password" in content:
+                     screenshot = await self.take_screenshot("wrong_password")
+                     return False, "Error: Wrong password.", "password", screenshot
 
-            # Check for 2FA
-            # Common 2FA indicators
-            if "challenge" in self.page.url or await self.page.locator('input[type="tel"]').count() > 0 or await self.page.locator('input[name="pin"]').count() > 0:
-                 self.step = "otp"
-                 return True, "2FA detected. Please enter the code.", "otp"
+                # 3. 2FA / Challenge
+                if "challenge" in self.page.url or await self.page.locator('input[type="tel"]').count() > 0 or "metadata" in self.page.url:
+                     self.step = "otp"
+                     screenshot = await self.take_screenshot("2fa_challenge")
+                     return True, "2FA/Verification detected. Please enter the code if you have one.", "otp", screenshot
 
-            # Check if it's asking for recovery email or something else
-            if "metadata" in self.page.url:
-                 # Just treat as OTP or waiting step
-                 self.step = "otp"
-                 return True, "Verification needed (Metadata). Please enter code if asked, or just wait.", "otp"
+                # 4. CAPTCHA or "Verify it's you"
+                if "Verify it's you" in content or "captcha" in content.lower():
+                     self.step = "otp" # Treat as OTP step to allow user to input or just see screenshot
+                     screenshot = await self.take_screenshot("verify_its_you")
+                     return True, "Google is asking to verify it's you. Check the screenshot.", "otp", screenshot
 
-            # If we are here, we might be logged in or in a weird state.
-            # Let's assume 2FA if not obviously logged in
-            self.step = "otp"
-            return True, "Verification needed. Please enter code if you have one.", "otp"
+                # Fallback: take a screenshot and assume OTP/Waiting
+                self.step = "otp"
+                screenshot = await self.take_screenshot("unknown_state")
+                return True, "Verification needed (Unknown State). Check screenshot.", "otp", screenshot
+
+            except Exception as e:
+                 screenshot = await self.take_screenshot("password_wait_error")
+                 return False, f"Error waiting after password: {str(e)}", "error", screenshot
 
         except Exception as e:
-            return False, f"Error entering password: {str(e)}", "error"
+            return False, f"Error entering password: {str(e)}", "error", None
 
     async def enter_otp(self, otp):
         try:
             # Try to identify the input field for OTP
-            # It varies: idvPin, specific name, type tel
-
             filled = False
-            if await self.page.locator('input[type="tel"]').count() > 0:
-                 await self.page.fill('input[type="tel"]', otp)
-                 filled = True
-            elif await self.page.locator('input[name="pin"]').count() > 0:
-                 await self.page.fill('input[name="pin"]', otp)
-                 filled = True
-            elif await self.page.locator('input[id="idvPin"]').count() > 0:
-                 await self.page.fill('input[id="idvPin"]', otp)
-                 filled = True
-            elif await self.page.locator('input[name="code"]').count() > 0:
-                 await self.page.fill('input[name="code"]', otp)
-                 filled = True
+
+            # Using wait_for_function-like logic by checking multiple selectors
+            selectors = ['input[type="tel"]', 'input[name="pin"]', 'input[id="idvPin"]', 'input[name="code"]']
+
+            for selector in selectors:
+                if await self.page.locator(selector).count() > 0:
+                    try:
+                         await self.page.fill(selector, otp)
+                         filled = True
+                         break
+                    except:
+                        pass
 
             if not filled:
-                 # Try just typing it?
+                 # Try just typing it globally if focused
                  await self.page.keyboard.type(otp)
 
             await self.page.keyboard.press("Enter")
 
             # Wait
-            await self.page.wait_for_load_state('networkidle')
-            await asyncio.sleep(5)
+            await self.page.wait_for_load_state('networkidle', timeout=60000)
 
+            # Check success
             if "myaccount.google.com" in self.page.url or "youtube.com" in self.page.url:
                  self.step = "done"
-                 return True, "Logged in!"
+                 return True, "Logged in!", None
 
             # If still on same page, maybe error
             if "challenge" in self.page.url:
-                 return False, "Still on verification page. Code might be wrong or additional step needed."
+                 screenshot = await self.take_screenshot("otp_failed")
+                 return False, "Still on verification page. Code might be wrong or additional step needed.", screenshot
 
             self.step = "done"
-            return True, "Logged in (assumed)!"
+            return True, "Logged in (assumed)!", None
 
         except Exception as e:
-            return False, str(e)
+            return False, str(e), None
 
     async def get_cookies_netscape(self):
         try:

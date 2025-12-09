@@ -548,7 +548,7 @@ async def text_handler(client: Client, message: Message):
 
         if state == 'waiting_email':
             processing_msg = await message.reply_text("🔄 Processing Email...")
-            success, msg = await session.enter_email(text_input)
+            success, msg, screenshot = await session.enter_email(text_input)
 
             if success:
                 if "password" in msg.lower():
@@ -559,10 +559,15 @@ async def text_handler(client: Client, message: Message):
             else:
                 await processing_msg.edit_text(f"❌ {msg}\n\nTry again or /cancel.")
 
+            if screenshot:
+                await client.send_photo(message.chat.id, screenshot, caption="📸 **Screenshot of Error/State**")
+                try: os.remove(screenshot)
+                except: pass
+
         elif state == 'waiting_password':
             # Delete password message for security if possible, but telegram bots can't delete user messages easily in private
             processing_msg = await message.reply_text("🔄 Processing Password...")
-            success, msg, next_step = await session.enter_password(text_input)
+            success, msg, next_step, screenshot = await session.enter_password(text_input)
 
             if success:
                 if next_step == "done":
@@ -578,15 +583,20 @@ async def text_handler(client: Client, message: Message):
                     await processing_msg.edit_text(f"✅ **Login Successful!**\n\nCookies have been generated, saved to `{cookie_path}`, and shared globally.")
                 elif next_step == "otp":
                     user_data[user_id]['state'] = 'waiting_otp'
-                    await processing_msg.edit_text(f"🛡️ **2FA Required**\n\n{msg}\n\nEnter the code now.")
+                    await processing_msg.edit_text(f"🛡️ **Verification Required**\n\n{msg}\n\nEnter the code now (or if it's a prompt on your phone, approve it and type 'done').")
                 else:
                     await processing_msg.edit_text(f"⚠️ {msg}")
             else:
                  await processing_msg.edit_text(f"❌ {msg}\n\nTry again or /cancel.")
 
+            if screenshot:
+                await client.send_photo(message.chat.id, screenshot, caption="📸 **Screenshot of Error/State**")
+                try: os.remove(screenshot)
+                except: pass
+
         elif state == 'waiting_otp':
             processing_msg = await message.reply_text("🔄 Verifying OTP...")
-            success, msg = await session.enter_otp(text_input)
+            success, msg, screenshot = await session.enter_otp(text_input)
 
             if success and "Logged in" in msg:
                  # Extract Cookies
@@ -601,6 +611,11 @@ async def text_handler(client: Client, message: Message):
                 await processing_msg.edit_text(f"✅ **Login Successful!**\n\nCookies have been generated, saved to `{cookie_path}`, and shared globally.")
             else:
                 await processing_msg.edit_text(f"ℹ️ {msg}")
+
+            if screenshot:
+                await client.send_photo(message.chat.id, screenshot, caption="📸 **Screenshot of Error/State**")
+                try: os.remove(screenshot)
+                except: pass
 
         return
 
