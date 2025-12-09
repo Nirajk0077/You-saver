@@ -54,27 +54,56 @@ class AuthSession:
 
             # Wait for either password input, error, or captcha
             try:
-                # Increased timeout to 60s for Render
-                # Also watching for captcha inputs
-                await self.page.wait_for_selector(
-                    'input[type="password"], div[aria-live="assertive"], div[jsname="B34EJ"], input[name="ca"], input[id="ca"], #captcha-box',
-                    timeout=60000
-                )
+                # Use a polling loop instead of a single wait_for_selector to avoid getting stuck on hidden elements
+                # Logic: Wait for ANY of the critical elements to be VISIBLE.
+                start_time = time.time()
+                found = False
+
+                while time.time() - start_time < 60:
+                    # Check Password
+                    if await self.page.locator('input[type="password"]').is_visible():
+                        found = True
+                        break
+
+                    # Check CAPTCHA
+                    if await self.page.locator('input[name="ca"]').is_visible() or \
+                       await self.page.locator('input[id="ca"]').is_visible() or \
+                       await self.page.locator('#captcha-box').is_visible() or \
+                       await self.page.locator('text="Type the text you hear or see"').is_visible():
+                        found = True
+                        break
+
+                    # Check Errors (text content mostly, as div might be hidden/generic)
+                    # We check page content for specific strings if we suspect an error, but that's checked below anyway.
+                    # But to break the loop, we check for error message visibility if possible.
+                    if await self.page.locator('div[aria-live="assertive"]').is_visible():
+                         # Check if it has text
+                         if await self.page.locator('div[aria-live="assertive"]').inner_text():
+                             found = True
+                             break
+
+                    # Check for "Couldn't find your Google Account"
+                    if await self.page.locator('text="Couldn\'t find your Google Account"').is_visible() or \
+                       await self.page.locator('text="Enter a valid email"').is_visible():
+                        found = True
+                        break
+
+                    await asyncio.sleep(1)
+
+                if not found:
+                    raise Exception("Timeout waiting for next step (password/captcha/error).")
 
                 # Check for CAPTCHA
-                if await self.page.locator('input[name="ca"]').count() > 0 or await self.page.locator('input[id="ca"]').count() > 0 or await self.page.locator('#captcha-box').count() > 0:
+                if await self.page.locator('input[name="ca"]').count() > 0 or \
+                   await self.page.locator('input[id="ca"]').count() > 0 or \
+                   await self.page.locator('#captcha-box').count() > 0 or \
+                   "Type the text you hear or see" in await self.page.content():
                     self.step = "captcha"
                     screenshot = await self.take_screenshot("captcha_detected")
                     return True, "CAPTCHA detected. Please enter the characters you see in the image.", "captcha", screenshot
 
-                # Check for "Type the text you hear or see" text as fallback
-                content = await self.page.content()
-                if "Type the text you hear or see" in content:
-                    self.step = "captcha"
-                    screenshot = await self.take_screenshot("captcha_text_detected")
-                    return True, "CAPTCHA detected. Please enter the characters you see in the image.", "captcha", screenshot
-
                 # Check for error message
+                content = await self.page.content()
                 if "Couldn't find your Google Account" in content or "Enter a valid email" in content:
                     screenshot = await self.take_screenshot("email_error")
                     return False, "Error: Couldn't find your Google Account or invalid email.", "error", screenshot
