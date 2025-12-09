@@ -368,7 +368,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
         await query.message.delete()
 
     elif data == "refresh_status":
-        await query.answer("🔄 Process is running...", show_alert=False)
+        await query.answer("🔄 Process is running...", show_alert=True)
 
     elif data.startswith("cancel_dl_"):
         try:
