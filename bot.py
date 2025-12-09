@@ -834,7 +834,7 @@ async def process_download(client: Client, message: Message, data: dict):
             # Log Channel Support
             if Config.LOG_CHANNEL_ID:
                 try:
-                    await sent_msg.copy(chat_id=Config.LOG_CHANNEL_ID)
+                    await sent_msg.copy(chat_id=Config.LOG_CHANNEL_ID, caption=caption)
                 except Exception as e:
                     print(f"Failed to copy to log channel: {e}")
 
@@ -869,7 +869,7 @@ async def process_download(client: Client, message: Message, data: dict):
             # Log Channel Support
             if Config.LOG_CHANNEL_ID:
                 try:
-                    await sent_msg.copy(chat_id=Config.LOG_CHANNEL_ID)
+                    await sent_msg.copy(chat_id=Config.LOG_CHANNEL_ID, caption=caption)
                 except Exception as e:
                     print(f"Failed to copy to log channel: {e}")
 
