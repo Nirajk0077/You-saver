@@ -11,7 +11,7 @@ class AuthSession:
         self.browser = None
         self.context = None
         self.page = None
-        self.step = "init"  # init, email, password, otp, done
+        self.step = "init"  # init, email, password, otp, done, captcha
         self.last_activity = time.time()
         self.error_msg = None
 
@@ -52,19 +52,32 @@ class AuthSession:
             await self.page.fill('input[type="email"]', email)
             await self.page.click('#identifierNext')
 
-            # Wait for either password input or error
+            # Wait for either password input, error, or captcha
             try:
                 # Increased timeout to 60s for Render
+                # Also watching for captcha inputs
                 await self.page.wait_for_selector(
-                    'input[type="password"], div[aria-live="assertive"], div[jsname="B34EJ"]',
+                    'input[type="password"], div[aria-live="assertive"], div[jsname="B34EJ"], input[name="ca"], input[id="ca"], #captcha-box',
                     timeout=60000
                 )
 
-                # Check for error message
+                # Check for CAPTCHA
+                if await self.page.locator('input[name="ca"]').count() > 0 or await self.page.locator('input[id="ca"]').count() > 0 or await self.page.locator('#captcha-box').count() > 0:
+                    self.step = "captcha"
+                    screenshot = await self.take_screenshot("captcha_detected")
+                    return True, "CAPTCHA detected. Please enter the characters you see in the image.", "captcha", screenshot
+
+                # Check for "Type the text you hear or see" text as fallback
                 content = await self.page.content()
+                if "Type the text you hear or see" in content:
+                    self.step = "captcha"
+                    screenshot = await self.take_screenshot("captcha_text_detected")
+                    return True, "CAPTCHA detected. Please enter the characters you see in the image.", "captcha", screenshot
+
+                # Check for error message
                 if "Couldn't find your Google Account" in content or "Enter a valid email" in content:
                     screenshot = await self.take_screenshot("email_error")
-                    return False, "Error: Couldn't find your Google Account or invalid email.", screenshot
+                    return False, "Error: Couldn't find your Google Account or invalid email.", "error", screenshot
 
                 # Verify password field is actually visible before proceeding
                 try:
@@ -72,21 +85,68 @@ class AuthSession:
                 except:
                     if "Enter a valid email" in await self.page.content():
                         screenshot = await self.take_screenshot("email_invalid")
-                        return False, "Error: Invalid email.", screenshot
+                        return False, "Error: Invalid email.", "error", screenshot
 
                     # Fallback check
                     if await self.page.locator('input[type="password"]').count() == 0:
                          screenshot = await self.take_screenshot("email_unknown_error")
-                         return False, "Email accepted, but password field not found/visible.", screenshot
+                         return False, "Email accepted, but password field not found/visible.", "error", screenshot
 
                 self.step = "password"
-                return True, "Email accepted. Please enter password.", None
+                return True, "Email accepted. Please enter password.", "password", None
             except Exception as e:
                 screenshot = await self.take_screenshot("email_timeout")
-                return False, f"Timeout or error waiting for password field: {str(e)}", screenshot
+                return False, f"Timeout or error waiting for password field: {str(e)}", "error", screenshot
 
         except Exception as e:
-            return False, f"Error entering email: {str(e)}", None
+            return False, f"Error entering email: {str(e)}", "error", None
+
+    async def enter_captcha(self, code):
+        try:
+            # Try to find captcha input
+            if await self.page.locator('input[name="ca"]').count() > 0:
+                 await self.page.fill('input[name="ca"]', code)
+            elif await self.page.locator('input[id="ca"]').count() > 0:
+                 await self.page.fill('input[id="ca"]', code)
+            else:
+                 # Try blind typing
+                 await self.page.keyboard.type(code)
+
+            await self.page.click('#identifierNext') # Usually same button
+
+            # Now wait for next step (likely password, or error, or another captcha)
+            try:
+                await self.page.wait_for_selector(
+                    'input[type="password"], div[aria-live="assertive"], input[name="ca"]',
+                    timeout=60000
+                )
+
+                # Check for captcha again (wrong code)
+                if await self.page.locator('input[name="ca"]').count() > 0:
+                    self.step = "captcha"
+                    screenshot = await self.take_screenshot("captcha_retry")
+                    return False, "Wrong CAPTCHA. Please try again.", "captcha", screenshot
+
+                # Check for password
+                if await self.page.locator('input[type="password"]').count() > 0:
+                     self.step = "password"
+                     return True, "CAPTCHA accepted. Please enter password.", "password", None
+
+                # Check for error
+                content = await self.page.content()
+                if "Enter a valid email" in content:
+                     screenshot = await self.take_screenshot("captcha_email_error")
+                     return False, "Error: Invalid email after CAPTCHA.", "error", screenshot
+
+                screenshot = await self.take_screenshot("captcha_unknown")
+                return False, "Unknown state after CAPTCHA.", "error", screenshot
+
+            except Exception as e:
+                 screenshot = await self.take_screenshot("captcha_timeout")
+                 return False, f"Timeout after CAPTCHA: {str(e)}", "error", screenshot
+
+        except Exception as e:
+             return False, f"Error entering CAPTCHA: {str(e)}", "error", None
 
     async def enter_password(self, password):
         try:
