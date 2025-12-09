@@ -37,6 +37,10 @@ class AuthSession:
             return False, f"Failed to start browser: {str(e)}"
 
     async def enter_email(self, email):
+        """
+        Returns: (success, message, extra_data)
+        extra_data can be 'password' (next step) or a filepath (screenshot on error)
+        """
         try:
             # Check if email field is present, if not, reload
             try:
@@ -46,18 +50,16 @@ class AuthSession:
                     await self.page.reload()
                     await self.page.wait_for_selector('input[type="email"]', state='visible', timeout=30000)
                 except Exception as e:
-                    return False, f"Error loading login page: {str(e)}"
+                    return False, f"Error loading login page: {str(e)}", None
 
             await self.page.fill('input[type="email"]', email)
 
             # Attempt to click Next button using multiple selectors
             next_clicked = False
             try:
-                # Try explicit ID first
                 if await self.page.locator('#identifierNext').is_visible():
                     await self.page.click('#identifierNext')
                     next_clicked = True
-                # Try finding button by text "Next"
                 elif await self.page.get_by_role("button", name="Next").is_visible():
                     await self.page.get_by_role("button", name="Next").click()
                     next_clicked = True
@@ -65,39 +67,42 @@ class AuthSession:
                 pass
 
             if not next_clicked:
-                # Fallback to Enter key
                 await self.page.keyboard.press("Enter")
 
-            # Polling loop for Password Field or Errors
-            # Increased total wait time to 90s for very slow renders
+            # Polling loop for Password Field, Errors, or Verification
             start_time = time.time()
             while time.time() - start_time < 90:
                 # 1. Check for Password Field
                 if await self.page.locator('input[type="password"]').is_visible():
-                    # Wait a tiny bit for animation
                     await asyncio.sleep(1)
                     self.step = "password"
-                    return True, "Email accepted. Please enter password."
+                    return True, "Email accepted. Please enter password.", "password"
 
-                # 2. Check for Common Error Messages (Text Content)
+                # 2. Check for Error/Verification content
                 content = await self.page.content()
                 if "Couldn't find your Google Account" in content:
-                    return False, "Error: Couldn't find your Google Account."
+                    return False, "Error: Couldn't find your Google Account.", None
                 if "Enter a valid email" in content:
-                    return False, "Error: Invalid email."
-                if "CAPTCHA" in content or "Verify it's you" in content:
-                    return False, "Error: CAPTCHA or Verification requested. Cannot proceed automatically."
+                    return False, "Error: Invalid email.", None
 
-                # 3. Aggressive Retry Logic
-                # If email input is still visible and enabled, we might be stuck.
-                # Every 10 seconds, try to kick it.
+                # Check for Verification/CAPTCHA
+                if "CAPTCHA" in content or "Verify it's you" in content or "Check your phone" in content:
+                    # Take a screenshot for the user
+                    screenshot_path = f"downloads/login_challenge_{self.user_id}.png"
+                    await self.page.screenshot(path=screenshot_path)
+
+                    # Wait and see if user approves it on phone (give them 30s)
+                    # We continue the loop. If they approve, page should navigate.
+                    # If we time out in the main loop, we will return the screenshot then.
+                    # But let's verify if we are stuck on the SAME page.
+                    pass
+
+                # 3. Aggressive Retry (only if still on email page)
                 if await self.page.locator('input[type="email"]').is_visible():
                     elapsed = time.time() - start_time
                     if elapsed > 10 and int(elapsed) % 10 == 0:
-                        # Try pressing Enter again
                         try:
                             await self.page.keyboard.press("Enter")
-                            # Or try clicking the button again if found
                             if await self.page.locator('#identifierNext').is_visible():
                                 await self.page.click('#identifierNext', timeout=1000)
                         except:
@@ -105,10 +110,18 @@ class AuthSession:
 
                 await asyncio.sleep(1)
 
-            return False, "Timeout waiting for password field."
+            # Timeout hit.
+            # Check if we are stuck on verification
+            content = await self.page.content()
+            if "CAPTCHA" in content or "Verify it's you" in content:
+                screenshot_path = f"downloads/login_challenge_{self.user_id}.png"
+                await self.page.screenshot(path=screenshot_path)
+                return False, "Google is asking for verification. Auto-login failed.", screenshot_path
+
+            return False, "Timeout waiting for password field.", None
 
         except Exception as e:
-            return False, f"Error entering email: {str(e)}"
+            return False, f"Error entering email: {str(e)}", None
 
     async def enter_password(self, password):
         try:
@@ -138,12 +151,9 @@ class AuthSession:
 
             # Check if it's asking for recovery email or something else
             if "metadata" in self.page.url:
-                 # Just treat as OTP or waiting step
                  self.step = "otp"
                  return True, "Verification needed (Metadata). Please enter code if asked, or just wait.", "otp"
 
-            # If we are here, we might be logged in or in a weird state.
-            # Let's assume 2FA if not obviously logged in
             self.step = "otp"
             return True, "Verification needed. Please enter code if you have one.", "otp"
 
