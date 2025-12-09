@@ -41,43 +41,46 @@ class AuthSession:
             await self.page.fill('input[type="email"]', email)
             await self.page.click('#identifierNext')
 
-            # Wait for either password input or error
+            # Wait for network activity to settle (helps with transitions)
             try:
-                # Wait for password selector or error
-                # We look for password input or the "couldn't find account" error
-                await self.page.wait_for_selector(
-                    'input[type="password"], div[aria-live="assertive"], div[jsname="B34EJ"]',
-                    timeout=10000
+                await self.page.wait_for_load_state('networkidle', timeout=5000)
+            except:
+                pass
+
+            # Wait for Password field OR Error Message efficiently
+            try:
+                await self.page.wait_for_function(
+                    """
+                    () => {
+                        // Check for Password Input (visible)
+                        const pw = document.querySelector('input[type="password"]');
+                        if (pw && pw.getBoundingClientRect().width > 0) return true;
+
+                        // Check for Errors
+                        const body = document.body.innerText;
+                        if (body.includes("Couldn't find your Google Account")) return true;
+                        if (body.includes("Enter a valid email")) return true;
+
+                        return false;
+                    }
+                    """,
+                    timeout=60000
                 )
+            except Exception:
+                return False, "Timeout: Password field did not appear after 60 seconds."
 
-                # Check for error message
-                # Sometimes error is in specific divs
-                content = await self.page.content()
-                if "Couldn't find your Google Account" in content or "Enter a valid email" in content:
-                    return False, "Error: Couldn't find your Google Account or invalid email."
-
-                # Verify password field is actually visible before proceeding
-                try:
-                    await self.page.wait_for_selector('input[type="password"]', state='visible', timeout=5000)
-                except:
-                    # If not visible yet, check if it's because of an error we missed
-                    if "Enter a valid email" in await self.page.content():
-                        return False, "Error: Invalid email."
-                    return False, "Email accepted, but password field not found/visible."
-
+            # Determine state
+            if await self.page.locator('input[type="password"]').is_visible():
                 self.step = "password"
                 return True, "Email accepted. Please enter password."
-            except Exception as e:
-                # If timeout, maybe it was successful but page structure is different, or slow internet
-                # Let's check if password field exists and is visible
-                try:
-                    if await self.page.locator('input[type="password"]').count() > 0:
-                        await self.page.wait_for_selector('input[type="password"]', state='visible', timeout=5000)
-                        self.step = "password"
-                        return True, "Email accepted. Please enter password."
-                except:
-                    pass
-                return False, f"Timeout or error waiting for password field: {str(e)}"
+
+            content = await self.page.content()
+            if "Couldn't find your Google Account" in content:
+                return False, "Error: Couldn't find your Google Account."
+            if "Enter a valid email" in content:
+                return False, "Error: Invalid email."
+
+            return False, "Error: Unknown state after email entry."
 
         except Exception as e:
             return False, f"Error entering email: {str(e)}"
