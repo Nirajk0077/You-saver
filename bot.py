@@ -548,16 +548,40 @@ async def text_handler(client: Client, message: Message):
 
         if state == 'waiting_email':
             processing_msg = await message.reply_text("🔄 Processing Email...")
-            success, msg, screenshot = await session.enter_email(text_input)
+            success, msg, next_step, screenshot = await session.enter_email(text_input)
 
             if success:
-                if "password" in msg.lower():
+                if next_step == "password":
+                    user_data[user_id]['state'] = 'waiting_password'
+                    await processing_msg.edit_text(f"✅ {msg}")
+                elif next_step == "captcha":
+                    user_data[user_id]['state'] = 'waiting_captcha'
+                    await processing_msg.edit_text(f"🧩 **CAPTCHA Required**\n\n{msg}")
+                else:
+                    await processing_msg.edit_text(f"⚠️ {msg}")
+            else:
+                await processing_msg.edit_text(f"❌ {msg}\n\nTry again or /cancel.")
+
+            if screenshot:
+                await client.send_photo(message.chat.id, screenshot, caption="📸 **Screenshot of Error/State**")
+                try: os.remove(screenshot)
+                except: pass
+
+        elif state == 'waiting_captcha':
+            processing_msg = await message.reply_text("🔄 Processing CAPTCHA...")
+            success, msg, next_step, screenshot = await session.enter_captcha(text_input)
+
+            if success:
+                if next_step == "password":
                     user_data[user_id]['state'] = 'waiting_password'
                     await processing_msg.edit_text(f"✅ {msg}")
                 else:
                     await processing_msg.edit_text(f"⚠️ {msg}")
             else:
-                await processing_msg.edit_text(f"❌ {msg}\n\nTry again or /cancel.")
+                if next_step == "captcha":
+                    await processing_msg.edit_text(f"❌ {msg}\n\nPlease try again.")
+                else:
+                    await processing_msg.edit_text(f"❌ {msg}\n\nTry again or /cancel.")
 
             if screenshot:
                 await client.send_photo(message.chat.id, screenshot, caption="📸 **Screenshot of Error/State**")
