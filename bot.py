@@ -9,7 +9,7 @@ import json
 import subprocess
 from aiohttp import web
 from pyrogram import Client, filters, idle, enums
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
 from yt_dlp import YoutubeDL
 from config import Config
 from auth_helper import AuthSession
@@ -613,7 +613,7 @@ async def text_handler(client: Client, message: Message):
 
         if state == 'waiting_email':
             processing_msg = await message.reply_text("🔄 Processing Email...")
-            success, msg = await session.enter_email(text_input)
+            success, msg, extra = await session.enter_email(text_input)
 
             if success:
                 if "password" in msg.lower():
@@ -622,7 +622,20 @@ async def text_handler(client: Client, message: Message):
                 else:
                     await processing_msg.edit_text(f"⚠️ {msg}")
             else:
-                await processing_msg.edit_text(f"❌ {msg}\n\nTry again or /cancel.")
+                if extra and extra.endswith('.png') and os.path.exists(extra):
+                    await message.reply_photo(
+                        extra,
+                        caption=f"❌ {msg}\n\n**Manual verification required.**\nGoogle is asking for verification (CAPTCHA or 'Verify it's you').\n\n**Option 1:** If it is a phone prompt, approve it now and the bot *might* detect it.\n**Option 2 (Recommended):** Use the **Upload Cookies** feature instead.",
+                        quote=True
+                    )
+                    # Clean up
+                    try:
+                        os.remove(extra)
+                    except:
+                        pass
+                    await processing_msg.delete()
+                else:
+                    await processing_msg.edit_text(f"❌ {msg}\n\nTry again or /cancel.")
 
         elif state == 'waiting_password':
             # Delete password message for security if possible, but telegram bots can't delete user messages easily in private
