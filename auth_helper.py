@@ -39,10 +39,22 @@ class AuthSession:
     async def enter_email(self, email):
         try:
             await self.page.fill('input[type="email"]', email)
-            await self.page.click('#identifierNext')
+            # Use keyboard press for better reliability
+            await self.page.keyboard.press("Enter")
 
-            # Wait for either password input or error
+            # Check if we are moving?
             try:
+                # First wait a few seconds to see if anything happens
+                await asyncio.sleep(2)
+
+                # Check if email input is still visible and enabled
+                # If so, maybe Enter didn't work, try clicking button
+                if await self.page.locator('input[type="email"]').is_visible():
+                    try:
+                        await self.page.click('#identifierNext')
+                    except:
+                        pass
+
                 # Wait for password selector or error
                 # We look for password input or the "couldn't find account" error
                 await self.page.wait_for_selector(
@@ -85,7 +97,8 @@ class AuthSession:
     async def enter_password(self, password):
         try:
             await self.page.fill('input[type="password"]:visible', password)
-            await self.page.click('#passwordNext')
+            await self.page.keyboard.press("Enter")
+            # await self.page.click('#passwordNext')
 
             # Wait for navigation or 2FA prompt
             await self.page.wait_for_load_state('networkidle')
