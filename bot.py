@@ -396,7 +396,7 @@ async def start_handler(client: Client, message: Message):
         [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
     ]
     if Config.CHANNEL_LINK:
-        buttons_list.append([InlineKeyboardButton("Join Channel", url=Config.CHANNEL_LINK)])
+        buttons_list.append([InlineKeyboardButton("📢 Update Channel ", url=Config.CHANNEL_LINK)])
 
     buttons = InlineKeyboardMarkup(buttons_list)
     
@@ -436,7 +436,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
             [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
         ]
         if Config.CHANNEL_LINK:
-            buttons_list.insert(3, [InlineKeyboardButton("Join Channel", url=Config.CHANNEL_LINK)])
+            buttons_list.insert(3, [InlineKeyboardButton("📢 Update Channel", url=Config.CHANNEL_LINK)])
 
         buttons = InlineKeyboardMarkup(buttons_list)
         
@@ -509,7 +509,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
             [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
         ]
         if Config.CHANNEL_LINK:
-            buttons_list.insert(3, [InlineKeyboardButton("Join Channel", url=Config.CHANNEL_LINK)])
+            buttons_list.insert(3, [InlineKeyboardButton("📢 Update Channel", url=Config.CHANNEL_LINK)])
 
         buttons = InlineKeyboardMarkup(buttons_list)
         
@@ -539,7 +539,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
             [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
         ]
         if Config.CHANNEL_LINK:
-            buttons_list.insert(3, [InlineKeyboardButton("Join Channel", url=Config.CHANNEL_LINK)])
+            buttons_list.insert(3, [InlineKeyboardButton("📢 Update Channel", url=Config.CHANNEL_LINK)])
 
         buttons = InlineKeyboardMarkup(buttons_list)
 
