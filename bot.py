@@ -254,29 +254,57 @@ def get_resolution_size(info, height):
         if not h: return False
         return target * 0.9 <= h <= target * 1.1
 
-    video_streams = [f for f in formats if f.get('vcodec') != 'none' and is_close(f.get('height'), height)]
+    # Check min(width, height) to support portrait mode correctly
+    video_streams = [
+        f for f in formats
+        if f.get('vcodec') != 'none'
+        and is_close(min(f.get('height', 0), f.get('width', 0)), height)
+    ]
 
     if not video_streams:
         return None
 
     # Pick the largest one (likely best quality)
-    best_video = max(video_streams, key=lambda x: x.get('filesize') or x.get('filesize_approx') or 0)
+    # If filesize is missing, prioritize by tbr (total bitrate)
+    best_video = max(video_streams, key=lambda x: x.get('filesize') or x.get('filesize_approx') or (x.get('tbr') or 0) * 1024)
+
     video_size = best_video.get('filesize') or best_video.get('filesize_approx')
 
+    # If size is missing, try to estimate from bitrate
     if not video_size:
-        return None
+        tbr = best_video.get('tbr') or best_video.get('vbr', 0)
+        duration = info.get('duration')
+        if tbr and duration:
+            # tbr is in kbit/s usually
+            video_size = (tbr * 1024 * duration) / 8
+        else:
+            video_size = 0 # Signal that stream exists but size is unknown
 
     # 2. Find best audio stream
     audio_streams = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
     audio_size = 0
     if audio_streams:
-        best_audio = max(audio_streams, key=lambda x: x.get('filesize') or x.get('filesize_approx') or 0)
-        audio_size = best_audio.get('filesize') or best_audio.get('filesize_approx') or 0
+        best_audio = max(audio_streams, key=lambda x: x.get('filesize') or x.get('filesize_approx') or (x.get('abr') or 0) * 1024)
+        audio_size = best_audio.get('filesize') or best_audio.get('filesize_approx')
+
+        if not audio_size:
+            abr = best_audio.get('abr')
+            duration = info.get('duration')
+            if abr and duration:
+                audio_size = (abr * 1024 * duration) / 8
+            else:
+                audio_size = 0
 
     # If video stream already has audio (e.g. 360p or 720p sometimes), acodec != none
     if best_video.get('acodec') != 'none':
         return video_size
     else:
+        # If either is 0 (unknown) but exists, result is "valid but unknown" if at least one part is unknown
+        # Actually if one is known and other unknown, sum is unknown?
+        # Let's say if we have valid video_size > 0, we add audio_size. If audio_size is 0, we just treat total as unknown or partial?
+        # Better to return 0 if we can't be sure, OR return estimated sum.
+        if video_size == 0:
+            return 0
         return video_size + audio_size
 
 def split_large_file(file_path, max_size=2097152000): # 2000 MiB
@@ -582,8 +610,8 @@ async def callback_handler(client: Client, query: CallbackQuery):
                  video_buttons = []
                  for res in resolutions:
                      size = get_resolution_size(info, res)
-                     if size:
-                         size_str = humanbytes(size)
+                     if size is not None:
+                         size_str = humanbytes(size) if size > 0 else "N/A"
                          video_buttons.append(InlineKeyboardButton(f"{res}p ({size_str})", callback_data=f"set_quality_{res}"))
 
                  # Group into rows of 2
@@ -719,8 +747,8 @@ async def youtube_handler(client: Client, message: Message):
         video_buttons = []
         for res in resolutions:
             size = get_resolution_size(info, res)
-            if size:
-                size_str = humanbytes(size)
+            if size is not None:
+                size_str = humanbytes(size) if size > 0 else "N/A"
                 video_buttons.append(InlineKeyboardButton(f"{res}p ({size_str})", callback_data=f"set_quality_{res}"))
 
         # Group into rows of 2
