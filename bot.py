@@ -6,6 +6,8 @@ import re
 import functools
 import shutil
 import json
+import math
+import subprocess
 from aiohttp import web
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -135,8 +137,9 @@ def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefi
     else:
         # Video Mode
         # Default to 1080 if invalid
-        if quality not in ['1080', '720', '480', '360']:
-            quality = '1080'
+        if quality not in ['2160', '1440', '1080', '720', '480', '360', '240', '144']:
+             # If quality is somehow invalid or not in list, fallback to best
+            pass
 
         format_str = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
         ydl_opts['format'] = format_str
@@ -212,6 +215,143 @@ def convert_to_netscape(content):
     # Fallback: return as is, maybe it's valid in a way we didn't check
     return content
 
+def get_resolution_size(info, height):
+    """
+    Estimates the size of a video at a specific resolution (height).
+    Returns size in bytes or None if not available.
+    Logic: Find best video stream <= height + best audio stream.
+    """
+    formats = info.get('formats', [])
+    if not formats:
+        return None
+
+    # 1. Find best video stream for this resolution
+    # Candidates: vcodec != none, acodec == none, height <= height (but closest to it)
+    # Actually we want exact height if possible, or closest down.
+    # But usually user wants "1080p" meaning "best up to 1080p".
+    # But wait, if 1080p is not available, we shouldn't show the button or show it as unavailable?
+    # The user wants buttons 144p...2160p. I should show all valid ones.
+
+    # Let's verify if this resolution exists in formats (approx)
+    # Actually, simpler: filter formats by height == target_height.
+    # If no exact match, maybe we shouldn't show it? Or maybe we show "N/A"?
+    # For now, let's look for formats with height == target_height
+
+    # We need to find best video-only stream at this height (or close to it)
+    # Allow a small range for height (e.g., 720p could be 700-740)
+    # But usually yt-dlp classifies them well.
+    # Let's search for video streams that match the resolution bracket.
+    # 2160p: 2160
+    # 1440p: 1440
+    # 1080p: 1080
+    # 720p: 720
+    # 480p: 480
+    # 360p: 360
+    # 240p: 240
+    # 144p: 144
+
+    def is_close(h, target):
+        if not h: return False
+        return target * 0.9 <= h <= target * 1.1
+
+    video_streams = [f for f in formats if f.get('vcodec') != 'none' and is_close(f.get('height'), height)]
+
+    if not video_streams:
+        return None
+
+    # Pick the largest one (likely best quality)
+    best_video = max(video_streams, key=lambda x: x.get('filesize') or x.get('filesize_approx') or 0)
+    video_size = best_video.get('filesize') or best_video.get('filesize_approx')
+
+    if not video_size:
+        return None
+
+    # 2. Find best audio stream
+    audio_streams = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+    audio_size = 0
+    if audio_streams:
+        best_audio = max(audio_streams, key=lambda x: x.get('filesize') or x.get('filesize_approx') or 0)
+        audio_size = best_audio.get('filesize') or best_audio.get('filesize_approx') or 0
+
+    # If video stream already has audio (e.g. 360p or 720p sometimes), acodec != none
+    if best_video.get('acodec') != 'none':
+        return video_size
+    else:
+        return video_size + audio_size
+
+def split_large_file(file_path, max_size=2097152000): # 2000 MiB
+    """
+    Splits a large file into chunks using ffmpeg.
+    Returns a list of file paths.
+    """
+    if os.path.getsize(file_path) <= max_size:
+        return [file_path]
+
+    # We need to split.
+    # Using ffmpeg segment muxer
+    # output pattern: filename part%03d.mp4
+
+    base_name, ext = os.path.splitext(file_path)
+    output_pattern = f"{base_name} part%03d{ext}"
+
+    # We use -fs (file size limit) but that terminates.
+    # We use segment muxer. -f segment -segment_time ...
+    # Splitting by size is tricky with ffmpeg without re-encoding or inaccurate cuts.
+    # But user just wants to upload.
+    # "part001, part002..."
+
+    # Try to calculate segment time based on size/duration ratio
+    # This is an estimation.
+    # Duration in seconds
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        duration = float(probe.stdout.strip())
+    except Exception as e:
+        print(f"Error getting duration: {e}")
+        return [file_path] # Fallback
+
+    total_size = os.path.getsize(file_path)
+    # Target size per part slightly less than max to be safe
+    target_part_size = max_size - (50 * 1024 * 1024) # 50MB buffer
+
+    num_parts = math.ceil(total_size / target_part_size)
+    segment_time = duration / num_parts
+
+    # Using segment muxer
+    # We use -y to overwrite if needed (though timestamps in filenames should avoid it usually, but re-runs might conflict)
+    cmd = [
+        "ffmpeg", "-y", "-i", file_path,
+        "-c", "copy",
+        "-map", "0",
+        "-f", "segment",
+        "-segment_time", str(segment_time),
+        "-segment_start_number", "1",
+        "-reset_timestamps", "1",
+        output_pattern
+    ]
+
+    print(f"Splitting file with command: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+
+    # Get list of generated files
+    # We can use glob
+    # Need to escape special chars in base_name for glob?
+    # Or just list dir and filter.
+    directory = os.path.dirname(file_path)
+    filename_only = os.path.basename(base_name)
+
+    generated_files = []
+    for f in sorted(os.listdir(directory)):
+        if f.startswith(filename_only + " part") and f.endswith(ext):
+             generated_files.append(os.path.join(directory, f))
+
+    return generated_files
+
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -224,9 +364,13 @@ async def start_handler(client: Client, message: Message):
         f"**Current Mode:**\nLeech Mode: {leech_status}"
     )
     
-    buttons = InlineKeyboardMarkup([
+    buttons_list = [
         [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
-    ])
+    ]
+    if Config.CHANNEL_LINK:
+        buttons_list.append([InlineKeyboardButton("Join Channel", url=Config.CHANNEL_LINK)])
+
+    buttons = InlineKeyboardMarkup(buttons_list)
     
     await message.reply_text(text, reply_markup=buttons)
 
@@ -257,12 +401,16 @@ async def callback_handler(client: Client, query: CallbackQuery):
         thumb_status = "✅ ON" if auto_thumb else "❌ OFF"
         thumb_btn_text = "Disable Auto Thumbnail" if auto_thumb else "Enable Auto Thumbnail"
         
-        buttons = InlineKeyboardMarkup([
+        buttons_list = [
             [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
             [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
             [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
             [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
-        ])
+        ]
+        if Config.CHANNEL_LINK:
+            buttons_list.insert(3, [InlineKeyboardButton("Join Channel", url=Config.CHANNEL_LINK)])
+
+        buttons = InlineKeyboardMarkup(buttons_list)
         
         await query.message.edit_text(
             f"⚙️ **Settings**\n\nLeech Mode: {leech_status}\nAuto Thumbnail: {thumb_status}\n\nIn Leech Mode, you can rename the file and set a custom thumbnail before downloading.",
@@ -326,12 +474,16 @@ async def callback_handler(client: Client, query: CallbackQuery):
         thumb_status = "✅ ON" if auto_thumb else "❌ OFF"
         thumb_btn_text = "Disable Auto Thumbnail" if auto_thumb else "Enable Auto Thumbnail"
         
-        buttons = InlineKeyboardMarkup([
+        buttons_list = [
             [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
             [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
             [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
             [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
-        ])
+        ]
+        if Config.CHANNEL_LINK:
+            buttons_list.insert(3, [InlineKeyboardButton("Join Channel", url=Config.CHANNEL_LINK)])
+
+        buttons = InlineKeyboardMarkup(buttons_list)
         
         await query.message.edit_text(
             f"⚙️ **Settings**\n\nLeech Mode: {leech_status}\nAuto Thumbnail: {thumb_status}",
@@ -352,12 +504,16 @@ async def callback_handler(client: Client, query: CallbackQuery):
         thumb_status = "✅ ON" if auto_thumb else "❌ OFF"
         thumb_btn_text = "Disable Auto Thumbnail" if auto_thumb else "Enable Auto Thumbnail"
 
-        buttons = InlineKeyboardMarkup([
+        buttons_list = [
             [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
             [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
             [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
             [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
-        ])
+        ]
+        if Config.CHANNEL_LINK:
+            buttons_list.insert(3, [InlineKeyboardButton("Join Channel", url=Config.CHANNEL_LINK)])
+
+        buttons = InlineKeyboardMarkup(buttons_list)
 
         await query.message.edit_text(
             f"⚙️ **Settings**\n\nLeech Mode: {leech_status}\nAuto Thumbnail: {thumb_status}",
@@ -399,14 +555,49 @@ async def callback_handler(client: Client, query: CallbackQuery):
         await query.message.edit_text("🎵 **Select MP3 Quality:**", reply_markup=buttons)
 
     elif data == "back_to_quality":
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("1080p", callback_data="set_quality_1080"),
-             InlineKeyboardButton("720p", callback_data="set_quality_720")],
-            [InlineKeyboardButton("480p", callback_data="set_quality_480"),
-             InlineKeyboardButton("360p", callback_data="set_quality_360")],
-            [InlineKeyboardButton("🎵 MP3", callback_data="show_mp3_options")]
-        ])
-        await query.message.edit_text("📹 **Select Quality:**", reply_markup=buttons)
+        # Need to re-fetch info or store it?
+        # Ideally we shouldn't re-fetch if we can avoid it.
+        # But for simplicity, we might just show buttons without size or trigger re-fetch.
+        # Actually, "back_to_quality" implies we are in "youtube_handler" context but we are in callback.
+        # We need to reconstruct the quality buttons.
+        # If we want to show sizes, we need info.
+
+        # We can try to get url from user_data
+        url = user_data[user_id].get('url')
+        if url:
+             # Trigger re-fetch logic essentially
+             await query.message.edit_text("🔎 Fetching info...")
+             # ... (Similar logic to youtube_handler but we are already here)
+             # Let's just call the same logic block
+             try:
+                 loop = asyncio.get_running_loop()
+                 cookiefile = f"cookies/cookies_{user_id}.txt"
+                 if not os.path.exists(cookiefile):
+                     cookiefile = None
+
+                 info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url, cookiefile))
+
+                 # Generate buttons
+                 resolutions = [144, 240, 360, 480, 720, 1080, 1440, 2160]
+                 video_buttons = []
+                 for res in resolutions:
+                     size = get_resolution_size(info, res)
+                     if size:
+                         size_str = humanbytes(size)
+                         video_buttons.append(InlineKeyboardButton(f"{res}p ({size_str})", callback_data=f"set_quality_{res}"))
+
+                 # Group into rows of 2
+                 rows = []
+                 for i in range(0, len(video_buttons), 2):
+                     rows.append(video_buttons[i:i+2])
+
+                 rows.append([InlineKeyboardButton("🎵 MP3", callback_data="show_mp3_options")])
+
+                 await query.message.edit_text("📹 **Select Quality:**", reply_markup=InlineKeyboardMarkup(rows))
+             except Exception as e:
+                 await query.message.edit_text(f"❌ Error: {e}")
+        else:
+             await query.message.edit_text("❌ Session expired.")
 
     elif data.startswith("set_quality_"):
         # Quality selected, proceed
@@ -513,16 +704,37 @@ async def youtube_handler(client: Client, message: Message):
         'quality': '1080' # default fallback
     }
     
-    # Ask for Quality
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("1080p", callback_data="set_quality_1080"),
-         InlineKeyboardButton("720p", callback_data="set_quality_720")],
-        [InlineKeyboardButton("480p", callback_data="set_quality_480"),
-         InlineKeyboardButton("360p", callback_data="set_quality_360")],
-        [InlineKeyboardButton("🎵 MP3", callback_data="show_mp3_options")]
-    ])
+    msg = await message.reply_text("🔎 Fetching info...")
+
+    try:
+        loop = asyncio.get_running_loop()
+        cookiefile = f"cookies/cookies_{user_id}.txt"
+        if not os.path.exists(cookiefile):
+            cookiefile = None
+
+        info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url, cookiefile))
+
+        # Calculate sizes and generate buttons
+        resolutions = [144, 240, 360, 480, 720, 1080, 1440, 2160]
+        video_buttons = []
+        for res in resolutions:
+            size = get_resolution_size(info, res)
+            if size:
+                size_str = humanbytes(size)
+                video_buttons.append(InlineKeyboardButton(f"{res}p ({size_str})", callback_data=f"set_quality_{res}"))
+
+        # Group into rows of 2
+        rows = []
+        for i in range(0, len(video_buttons), 2):
+            rows.append(video_buttons[i:i+2])
+
+        rows.append([InlineKeyboardButton("🎵 MP3", callback_data="show_mp3_options")])
+
+        await msg.edit_text("📹 **Select Quality:**", reply_markup=InlineKeyboardMarkup(rows))
     
-    await message.reply_text("📹 **Select Quality:**", reply_markup=buttons)
+    except Exception as e:
+        await msg.edit_text(f"❌ Error fetching info: {str(e)}")
+
 
 # Generic text handler (runs after specific handlers)
 @app.on_message(filters.text)
@@ -768,45 +980,105 @@ async def process_download(client: Client, message: Message, data: dict):
         
         if video_files:
             video_path = video_files[0]
-            # Get languages if available, else default to 'English/Unknown'
-            # yt-dlp info might have 'language' or 'requested_subtitles' etc but often it is hard to determine precisely for video file if not in info.
-            # However, info dict usually has 'language' field if available.
-            languages = info.get('language') or "English"
+            # Better Language Detection
+            langs = set()
+            if info.get('language'):
+                langs.add(info['language'])
+
+            # Check subtitles/captions
+            if info.get('subtitles'):
+                for lang in info['subtitles'].keys():
+                    if lang not in ['live_chat']:
+                        langs.add(lang)
+            if info.get('automatic_captions'):
+                 # Maybe too many, but good to know
+                 pass
+
+            # Combine language info
+            language_display = "English/Unknown"
+            if langs:
+                language_display = ", ".join(sorted(list(langs)))
+
             file_size = os.path.getsize(video_path)
 
             caption = (
                 f"<b>{final_title}</b>\n\n"
-                f"🔊 {languages}\n"
+                f"🔊 {language_display}\n"
                 f"💿 <b>Size:</b> {humanbytes(file_size)}\n"
                 f"👤 <b>Requested by:</b> {mention}"
             )
 
-            # Start timer for progress
-            start_time = time.time()
-            await status_msg.edit_text("⬆️ Uploading Video to Telegram...")
+            # Check if file is too big
+            MAX_SIZE = 2000 * 1024 * 1024 # 2000 MiB
 
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=video_path,
-                caption=caption,
-                duration=duration,
-                width=width,
-                height=height,
-                thumb=thumb_to_use,
-                supports_streaming=True,
-                progress=progress_for_pyrogram,
-                progress_args=("⬆️ Uploading Video...", status_msg, start_time, check_cancel)
-            )
+            if file_size > MAX_SIZE:
+                await status_msg.edit_text(f"⚠️ File is too big ({humanbytes(file_size)}). Splitting into parts...")
+
+                try:
+                    split_files = await loop.run_in_executor(None, split_large_file, video_path)
+
+                    total_parts = len(split_files)
+                    for i, part_path in enumerate(split_files):
+                         part_size = os.path.getsize(part_path)
+                         part_caption = (
+                             f"<b>{final_title}</b> (Part {i+1}/{total_parts})\n\n"
+                             f"🔊 {language_display}\n"
+                             f"💿 <b>Size:</b> {humanbytes(part_size)}\n"
+                             f"👤 <b>Requested by:</b> {mention}"
+                         )
+
+                         await status_msg.edit_text(f"⬆️ Uploading Part {i+1}/{total_parts}...")
+
+                         start_time = time.time()
+                         await client.send_video(
+                            chat_id=message.chat.id,
+                            video=part_path,
+                            caption=part_caption,
+                            duration=duration, # Approximate, or we should re-probe
+                            width=width,
+                            height=height,
+                            thumb=thumb_to_use,
+                            supports_streaming=True,
+                            progress=progress_for_pyrogram,
+                            progress_args=(f"⬆️ Uploading Part {i+1}...", status_msg, start_time, check_cancel)
+                         )
+
+                    # Clean up parts
+                    for p in split_files:
+                        if os.path.exists(p) and p != video_path:
+                            os.remove(p)
+
+                except Exception as e:
+                    await status_msg.edit_text(f"❌ Error splitting/uploading: {e}")
+                    return
+
+            else:
+                # Normal Upload
+                start_time = time.time()
+                await status_msg.edit_text("⬆️ Uploading Video to Telegram...")
+
+                await client.send_video(
+                    chat_id=message.chat.id,
+                    video=video_path,
+                    caption=caption,
+                    duration=duration,
+                    width=width,
+                    height=height,
+                    thumb=thumb_to_use,
+                    supports_streaming=True,
+                    progress=progress_for_pyrogram,
+                    progress_args=("⬆️ Uploading Video...", status_msg, start_time, check_cancel)
+                )
 
         elif audio_files:
             audio_path = audio_files[0]
-            languages = info.get('language') or "English"
+            language_display = info.get('language') or "English/Unknown"
             file_size = os.path.getsize(audio_path)
 
             display_quality = quality.replace("mp3_", "MP3 ").replace("_", " ")
             caption = (
                 f"<b>{final_title}</b>\n\n"
-                f"🔊 {languages}\n"
+                f"🔊 {language_display}\n"
                 f"💿 <b>Size:</b> {humanbytes(file_size)}\n"
                 f"👤 <b>Requested by:</b> {mention}"
             )
