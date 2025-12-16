@@ -27,8 +27,11 @@ app = Client(
 # Global States
 # user_settings = { user_id: {'leech': bool} }
 user_settings = {}
-# user_data = { user_id: {'state': str, 'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'quality': str} }
+# user_data = { user_id: {'state': str, 'request_key': tuple} }
+# 'state': waiting_cookies, waiting_email, waiting_password, waiting_otp, waiting_rename, waiting_thumb
 user_data = {}
+# request_data = { (chat_id, message_id): {'url': str, 'title': str, 'rename': str, 'thumb_path': str, 'original_message_id': int, 'user': User, 'quality': str} }
+request_data = {}
 # active_logins = { user_id: AuthSession }
 active_logins = {}
 # cancel_processes = { message_id: bool }
@@ -225,31 +228,6 @@ def get_resolution_size(info, height):
     if not formats:
         return None
 
-    # 1. Find best video stream for this resolution
-    # Candidates: vcodec != none, acodec == none, height <= height (but closest to it)
-    # Actually we want exact height if possible, or closest down.
-    # But usually user wants "1080p" meaning "best up to 1080p".
-    # But wait, if 1080p is not available, we shouldn't show the button or show it as unavailable?
-    # The user wants buttons 144p...2160p. I should show all valid ones.
-
-    # Let's verify if this resolution exists in formats (approx)
-    # Actually, simpler: filter formats by height == target_height.
-    # If no exact match, maybe we shouldn't show it? Or maybe we show "N/A"?
-    # For now, let's look for formats with height == target_height
-
-    # We need to find best video-only stream at this height (or close to it)
-    # Allow a small range for height (e.g., 720p could be 700-740)
-    # But usually yt-dlp classifies them well.
-    # Let's search for video streams that match the resolution bracket.
-    # 2160p: 2160
-    # 1440p: 1440
-    # 1080p: 1080
-    # 720p: 720
-    # 480p: 480
-    # 360p: 360
-    # 240p: 240
-    # 144p: 144
-
     def is_close(h, target):
         if not h: return False
         return target * 0.9 <= h <= target * 1.1
@@ -299,10 +277,6 @@ def get_resolution_size(info, height):
     if best_video.get('acodec') != 'none':
         return video_size
     else:
-        # If either is 0 (unknown) but exists, result is "valid but unknown" if at least one part is unknown
-        # Actually if one is known and other unknown, sum is unknown?
-        # Let's say if we have valid video_size > 0, we add audio_size. If audio_size is 0, we just treat total as unknown or partial?
-        # Better to return 0 if we can't be sure, OR return estimated sum.
         if video_size == 0:
             return 0
         return video_size + audio_size
@@ -315,22 +289,9 @@ def split_large_file(file_path, max_size=2097152000): # 2000 MiB
     if os.path.getsize(file_path) <= max_size:
         return [file_path]
 
-    # We need to split.
-    # Using ffmpeg segment muxer
-    # output pattern: filename part%03d.mp4
-
     base_name, ext = os.path.splitext(file_path)
     output_pattern = f"{base_name} part%03d{ext}"
 
-    # We use -fs (file size limit) but that terminates.
-    # We use segment muxer. -f segment -segment_time ...
-    # Splitting by size is tricky with ffmpeg without re-encoding or inaccurate cuts.
-    # But user just wants to upload.
-    # "part001, part002..."
-
-    # Try to calculate segment time based on size/duration ratio
-    # This is an estimation.
-    # Duration in seconds
     try:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path],
@@ -350,8 +311,6 @@ def split_large_file(file_path, max_size=2097152000): # 2000 MiB
     num_parts = math.ceil(total_size / target_part_size)
     segment_time = duration / num_parts
 
-    # Using segment muxer
-    # We use -y to overwrite if needed (though timestamps in filenames should avoid it usually, but re-runs might conflict)
     cmd = [
         "ffmpeg", "-y", "-i", file_path,
         "-c", "copy",
@@ -366,10 +325,6 @@ def split_large_file(file_path, max_size=2097152000): # 2000 MiB
     print(f"Splitting file with command: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
-    # Get list of generated files
-    # We can use glob
-    # Need to escape special chars in base_name for glob?
-    # Or just list dir and filter.
     directory = os.path.dirname(file_path)
     filename_only = os.path.basename(base_name)
 
@@ -446,8 +401,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
         )
     
     elif data == "set_cookies_btn":
-        # user_data[user_id] = {'state': 'waiting_cookies'}
-
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔑 Login to YouTube (Auto)", callback_data="login_youtube")],
             [InlineKeyboardButton("📤 Upload Cookies File", callback_data="upload_cookies_file")],
@@ -492,7 +445,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
         current = get_user_setting(user_id, 'leech', False)
         set_user_setting(user_id, 'leech', not current)
         
-        # Refresh settings menu
         is_leech = not current
         auto_thumb = get_user_setting(user_id, 'auto_thumb', True)
 
@@ -522,7 +474,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
         current = get_user_setting(user_id, 'auto_thumb', True)
         set_user_setting(user_id, 'auto_thumb', not current)
 
-        # Refresh settings menu
         is_leech = get_user_setting(user_id, 'leech', False)
         auto_thumb = not current
 
@@ -556,7 +507,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
     elif data.startswith("cancel_dl_"):
         try:
-            # data format: cancel_dl_{chat_id}_{message_id}
             parts = data.split("_")
             chat_id = int(parts[-2])
             msg_id = int(parts[-1])
@@ -583,20 +533,14 @@ async def callback_handler(client: Client, query: CallbackQuery):
         await query.message.edit_text("🎵 **Select MP3 Quality:**", reply_markup=buttons)
 
     elif data == "back_to_quality":
-        # Need to re-fetch info or store it?
-        # Ideally we shouldn't re-fetch if we can avoid it.
-        # But for simplicity, we might just show buttons without size or trigger re-fetch.
-        # Actually, "back_to_quality" implies we are in "youtube_handler" context but we are in callback.
-        # We need to reconstruct the quality buttons.
-        # If we want to show sizes, we need info.
+        key = (query.message.chat.id, query.message.id)
+        if key not in request_data:
+            await query.message.edit_text("❌ Session expired.")
+            return
 
-        # We can try to get url from user_data
-        url = user_data[user_id].get('url')
+        url = request_data[key].get('url')
         if url:
-             # Trigger re-fetch logic essentially
              await query.message.edit_text("🔎 Fetching info...")
-             # ... (Similar logic to youtube_handler but we are already here)
-             # Let's just call the same logic block
              try:
                  loop = asyncio.get_running_loop()
                  cookiefile = f"cookies/cookies_{user_id}.txt"
@@ -605,7 +549,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
                  info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url, cookiefile))
 
-                 # Generate buttons
                  resolutions = [144, 240, 360, 480, 720, 1080, 1440, 2160]
                  video_buttons = []
                  for res in resolutions:
@@ -614,7 +557,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
                          size_str = humanbytes(size) if size > 0 else "N/A"
                          video_buttons.append(InlineKeyboardButton(f"{res}p ({size_str})", callback_data=f"set_quality_{res}"))
 
-                 # Group into rows of 2
                  rows = []
                  for i in range(0, len(video_buttons), 2):
                      rows.append(video_buttons[i:i+2])
@@ -628,36 +570,33 @@ async def callback_handler(client: Client, query: CallbackQuery):
              await query.message.edit_text("❌ Session expired.")
 
     elif data.startswith("set_quality_"):
-        # Quality selected, proceed
+        key = (query.message.chat.id, query.message.id)
+        if key not in request_data:
+            await query.answer("Session expired.", show_alert=True)
+            return
+
         parts = data.split("_")
-        if len(parts) > 3: # set_quality_mp3_...
-            # e.g. set_quality_mp3_fast_128 -> mp3_fast_128
-            # e.g. set_quality_mp3_320 -> mp3_320
+        if len(parts) > 3:
             quality = "_".join(parts[2:])
         else:
             quality = parts[2]
 
-        user_data[user_id]['quality'] = quality
-        
-        url = user_data[user_id].get('url')
-        if not url:
-            await query.answer("Session expired.", show_alert=True)
-            return
+        request_data[key]['quality'] = quality
+        url = request_data[key].get('url')
 
         is_leech = get_user_setting(user_id, 'leech', False)
         
         if not is_leech:
             await query.message.delete()
-            await process_download(client, query.message, user_data[user_id])
-            # Cleanup
-            if user_id in user_data:
-                del user_data[user_id]
+            # Run download in background task
+            asyncio.create_task(process_download(client, query.message, request_data[key]))
+            # Cleanup request data
+            del request_data[key]
         else:
             # Leech Mode: Fetch info and show menu
             await query.message.edit_text("🔎 Fetching info...")
             try:
                 loop = asyncio.get_running_loop()
-                # Determine cookie file
                 cookiefile = f"cookies/cookies_{user_id}.txt"
                 if not os.path.exists(cookiefile):
                     cookiefile = None
@@ -665,8 +604,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url, cookiefile))
                 title = info.get('title', 'Unknown Title')
                 
-                user_data[user_id]['title'] = title
-                user_data[user_id]['state'] = 'idle'
+                request_data[key]['title'] = title
                 
                 display_quality = quality.replace("mp3_", "MP3 ").replace("_", " ") if "mp3" in quality else f"{quality}p"
 
@@ -684,27 +622,39 @@ async def callback_handler(client: Client, query: CallbackQuery):
                  await query.message.edit_text(f"❌ Error fetching info: {str(e)}")
 
     elif data == "leech_rename":
-        user_data[user_id]['state'] = 'waiting_rename'
+        # Store request_key in user_data to know which request to rename
+        user_data[user_id] = {
+            'state': 'waiting_rename',
+            'request_key': (query.message.chat.id, query.message.id)
+        }
         await query.message.reply_text("✏️ Send me the new filename (without extension):")
         
     elif data == "leech_thumb":
-        user_data[user_id]['state'] = 'waiting_thumb'
+        user_data[user_id] = {
+            'state': 'waiting_thumb',
+            'request_key': (query.message.chat.id, query.message.id)
+        }
         await query.message.reply_text("🖼️ Send me the new thumbnail (photo):")
         
     elif data == "leech_upload":
-        if user_id not in user_data or 'url' not in user_data[user_id]:
+        key = (query.message.chat.id, query.message.id)
+        if key not in request_data:
             await query.answer("Session expired.", show_alert=True)
             return
         
         await query.message.delete()
-        await process_download(client, query.message, user_data[user_id])
-        # Cleanup state
-        if user_id in user_data:
-            del user_data[user_id]
+        asyncio.create_task(process_download(client, query.message, request_data[key]))
+        del request_data[key]
             
     elif data == "leech_cancel":
-        if user_id in user_data:
+        key = (query.message.chat.id, query.message.id)
+        if key in request_data:
+            del request_data[key]
+
+        # Clear user state if they were renaming/thumbing this request
+        if user_id in user_data and user_data[user_id].get('request_key') == key:
             del user_data[user_id]
+
         await query.message.delete()
         await query.message.reply_text("❌ Operation cancelled.")
 
@@ -720,9 +670,10 @@ async def youtube_handler(client: Client, message: Message):
         return
     url = match.group(0)
 
-    # Store URL and setup state
-    user_data[user_id] = {
-        'state': 'waiting_quality',
+    msg = await message.reply_text("🔎 Fetching info...")
+
+    # Store in request_data keyed by the bot's message ID
+    request_data[(message.chat.id, msg.id)] = {
         'url': url,
         'title': None,
         'rename': None,
@@ -731,8 +682,6 @@ async def youtube_handler(client: Client, message: Message):
         'user': message.from_user,
         'quality': '1080' # default fallback
     }
-    
-    msg = await message.reply_text("🔎 Fetching info...")
 
     try:
         loop = asyncio.get_running_loop()
@@ -762,6 +711,9 @@ async def youtube_handler(client: Client, message: Message):
     
     except Exception as e:
         await msg.edit_text(f"❌ Error fetching info: {str(e)}")
+        # Cleanup if error
+        if (message.chat.id, msg.id) in request_data:
+            del request_data[(message.chat.id, msg.id)]
 
 
 # Generic text handler (runs after specific handlers)
@@ -829,13 +781,11 @@ async def text_handler(client: Client, message: Message):
                 except: pass
 
         elif state == 'waiting_password':
-            # Delete password message for security if possible, but telegram bots can't delete user messages easily in private
             processing_msg = await message.reply_text("🔄 Processing Password...")
             success, msg, next_step, screenshot = await session.enter_password(text_input)
 
             if success:
                 if next_step == "done":
-                    # Extract Cookies
                     cookies = await session.get_cookies_netscape()
                     cookie_path = save_cookies_globally(user_id, cookies)
 
@@ -863,7 +813,6 @@ async def text_handler(client: Client, message: Message):
             success, msg, screenshot = await session.enter_otp(text_input)
 
             if success and "Logged in" in msg:
-                 # Extract Cookies
                 cookies = await session.get_cookies_netscape()
                 cookie_path = save_cookies_globally(user_id, cookies)
 
@@ -884,11 +833,16 @@ async def text_handler(client: Client, message: Message):
         return
 
     if state == 'waiting_rename':
-        new_name = message.text.strip()
-        user_data[user_id]['rename'] = new_name
-        user_data[user_id]['state'] = 'idle'
-        
-        await message.reply_text(f"✅ Name set to: `{new_name}`")
+        request_key = user_data[user_id].get('request_key')
+        if request_key and request_key in request_data:
+            new_name = message.text.strip()
+            request_data[request_key]['rename'] = new_name
+            # Clear user state
+            del user_data[user_id]
+            await message.reply_text(f"✅ Name set to: `{new_name}`")
+        else:
+            await message.reply_text("❌ Request expired or invalid.")
+            del user_data[user_id]
 
 @app.on_message(filters.document)
 async def document_handler(client: Client, message: Message):
@@ -917,14 +871,26 @@ async def document_handler(client: Client, message: Message):
 @app.on_message(filters.photo)
 async def photo_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    if user_id in user_data and user_data[user_id].get('state') == 'waiting_thumb':
-        msg = await message.reply_text("⬇️ Downloading thumbnail...")
-        path = await message.download(file_name=f"downloads/thumbs/{user_id}.jpg")
-        
-        user_data[user_id]['thumb_path'] = path
-        user_data[user_id]['state'] = 'idle'
-        
-        await msg.edit_text("✅ Thumbnail set.")
+    state = user_data.get(user_id, {}).get('state')
+
+    if state == 'waiting_thumb':
+        request_key = user_data[user_id].get('request_key')
+        if request_key and request_key in request_data:
+            msg = await message.reply_text("⬇️ Downloading thumbnail...")
+            # Use request key for thumb name to avoid collisions? Or just timestamp.
+            # user_id is fine if they only have one active thumb-wait state.
+            path = await message.download(file_name=f"downloads/thumbs/{user_id}_{int(time.time())}.jpg")
+
+            request_data[request_key]['thumb_path'] = path
+
+            # Clear user state
+            del user_data[user_id]
+
+            await msg.edit_text("✅ Thumbnail set.")
+        else:
+             await message.reply_text("❌ Request expired or invalid.")
+             if user_id in user_data:
+                 del user_data[user_id]
 
 async def process_download(client: Client, message: Message, data: dict):
     """
@@ -968,9 +934,6 @@ async def process_download(client: Client, message: Message, data: dict):
 
     try:
         loop = asyncio.get_running_loop()
-        # If custom thumb is provided, we might not need yt-dlp to write one, 
-        # but it's safer to let it write one as backup if we don't use it.
-        # However, if we have a custom thumb, we will pass it explicitly to send_video.
         
         download_start = time.time()
         info = await loop.run_in_executor(
@@ -986,8 +949,6 @@ async def process_download(client: Client, message: Message, data: dict):
         files_path = f"downloads/{timestamp}/"
         
         # Determine which thumbnail to use
-        # 1. Custom thumb if provided
-        # 2. Downloaded thumb from yt-dlp (if auto_thumb is True)
         thumb_to_use = None
         
         if custom_thumb and os.path.exists(custom_thumb):
@@ -1003,7 +964,6 @@ async def process_download(client: Client, message: Message, data: dict):
         
         # Construct Caption
         final_title = custom_name if custom_name else title
-        # Use user.mention for a proper clickable link
         mention = user.mention if user else "Unknown"
         
         if video_files:
@@ -1013,16 +973,13 @@ async def process_download(client: Client, message: Message, data: dict):
             if info.get('language'):
                 langs.add(info['language'])
 
-            # Check subtitles/captions
             if info.get('subtitles'):
                 for lang in info['subtitles'].keys():
                     if lang not in ['live_chat']:
                         langs.add(lang)
             if info.get('automatic_captions'):
-                 # Maybe too many, but good to know
                  pass
 
-            # Combine language info
             language_display = "English/Unknown"
             if langs:
                 language_display = ", ".join(sorted(list(langs)))
@@ -1062,7 +1019,7 @@ async def process_download(client: Client, message: Message, data: dict):
                             chat_id=message.chat.id,
                             video=part_path,
                             caption=part_caption,
-                            duration=duration, # Approximate, or we should re-probe
+                            duration=duration,
                             width=width,
                             height=height,
                             thumb=thumb_to_use,
@@ -1081,7 +1038,6 @@ async def process_download(client: Client, message: Message, data: dict):
                     return
 
             else:
-                # Normal Upload
                 start_time = time.time()
                 await status_msg.edit_text("⬆️ Uploading Video to Telegram...")
 
@@ -1135,7 +1091,6 @@ async def process_download(client: Client, message: Message, data: dict):
         # Delete the user's original link/message
         if original_msg_id:
              try:
-                # Need to use delete_messages to specify message id
                 await client.delete_messages(chat_id=message.chat.id, message_ids=original_msg_id)
              except Exception:
                 pass
@@ -1173,10 +1128,8 @@ async def api_info_handler(request):
     
     try:
         loop = asyncio.get_running_loop()
-        # Use fetch_info_sync which reuses our cookies configuration
         info = await loop.run_in_executor(None, functools.partial(fetch_info_sync, url))
         
-        # Extract relevant fields
         response_data = {
             'title': info.get('title'),
             'duration': info.get('duration'),
@@ -1186,15 +1139,12 @@ async def api_info_handler(request):
             'formats': []
         }
         
-        # Simplify formats for the API consumer
         for f in info.get('formats', []):
-            # Only keep useful formats (e.g., mp4 with audio/video or specific resolutions)
-            # This is a raw dump of available streams.
             response_data['formats'].append({
                 'format_id': f.get('format_id'),
                 'ext': f.get('ext'),
                 'resolution': f.get('resolution'),
-                'url': f.get('url'), # Note: might be IP locked
+                'url': f.get('url'),
                 'filesize': f.get('filesize'),
                 'vcodec': f.get('vcodec'),
                 'acodec': f.get('acodec')
@@ -1215,7 +1165,6 @@ async def cleanup_sessions_task():
             to_remove = []
 
             for user_id, session in list(active_logins.items()):
-                # If session is inactive for more than 5 minutes, close it
                 if current_time - session.last_activity > 300: # 300 seconds = 5 minutes
                     try:
                         await session.close()
