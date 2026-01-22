@@ -10,9 +10,11 @@ import math
 import subprocess
 from aiohttp import web
 from pyrogram import Client, filters, idle
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ChatJoinRequest
+from pyrogram.errors import UserNotParticipant
 from yt_dlp import YoutubeDL
 from config import Config
+from database import db
 from auth_helper import AuthSession
 from progress import progress_for_pyrogram, humanbytes
 
@@ -33,6 +35,39 @@ user_data = {}
 active_logins = {}
 # cancel_processes = { message_id: bool }
 cancel_processes = {}
+
+async def check_fsub(client, message):
+    if not Config.FSUB_CHANNEL_ID:
+        return True
+
+    # Handle Message or CallbackQuery
+    user = message.from_user
+
+    try:
+        await client.get_chat_member(Config.FSUB_CHANNEL_ID, user.id)
+        return True
+    except UserNotParticipant:
+        try:
+            invite_link = await client.export_chat_invite_link(Config.FSUB_CHANNEL_ID)
+        except:
+            invite_link = Config.CHANNEL_LINK
+
+        buttons = [
+            [InlineKeyboardButton("📢 Join Channel", url=invite_link)],
+        ]
+
+        text = "⚠️ **You must join our channel to use this bot!**\n\nPlease join and try again."
+        markup = InlineKeyboardMarkup(buttons)
+
+        if isinstance(message, Message):
+             await message.reply_text(text, reply_markup=markup)
+        elif isinstance(message, CallbackQuery):
+            await message.message.reply_text(text, reply_markup=markup)
+
+        return False
+    except Exception as e:
+        print(f"Error in FSub: {e}")
+        return True
 
 def save_cookies_globally(user_id, content):
     """Saves cookies to user-specific file and global cookies.txt"""
@@ -382,7 +417,25 @@ def split_large_file(file_path, max_size=2097152000): # 2000 MiB
 
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
+    if not await check_fsub(client, message):
+        return
+
     user_id = message.from_user.id
+
+    # Database: Add User & Log
+    if await db.add_user(user_id):
+        if Config.LOG_CHANNEL_ID:
+            try:
+                await client.send_message(
+                    Config.LOG_CHANNEL_ID,
+                    f"📢 **New User Started Bot**\n\n"
+                    f"👤 **User:** {message.from_user.mention}\n"
+                    f"🆔 **ID:** `{user_id}`\n"
+                    f"📛 **Username:** @{message.from_user.username if message.from_user.username else 'N/A'}"
+                )
+            except Exception as e:
+                print(f"Log Error: {e}")
+
     leech_status = "✅ ON" if get_user_setting(user_id, 'leech', False) else "❌ OFF"
     
     text = (
@@ -402,8 +455,18 @@ async def start_handler(client: Client, message: Message):
     
     await message.reply_text(text, reply_markup=buttons)
 
+@app.on_chat_join_request(filters.chat(Config.FSUB_CHANNEL_ID))
+async def approve_join_request(client: Client, request: ChatJoinRequest):
+    try:
+        await client.approve_chat_join_request(request.chat.id, request.from_user.id)
+    except Exception as e:
+        print(f"Error approving join request: {e}")
+
 @app.on_message(filters.command("set_cookies") & filters.private)
 async def set_cookies_command(client: Client, message: Message):
+    if message.from_user.id not in Config.ADMIN_IDS:
+        return
+
     await message.reply_text(
         "🍪 **Set Cookies**\n\n"
         "Please send your cookies in one of the following formats:\n"
@@ -432,9 +495,12 @@ async def callback_handler(client: Client, query: CallbackQuery):
         buttons_list = [
             [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
             [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
-            [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
-            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
         ]
+
+        if user_id in Config.ADMIN_IDS:
+            buttons_list.append([InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")])
+
+        buttons_list.append([InlineKeyboardButton("🔙 Back", callback_data="close_settings")])
         if Config.CHANNEL_LINK:
             buttons_list.insert(3, [InlineKeyboardButton("📢 Update Channel", url=Config.CHANNEL_LINK)])
 
@@ -446,6 +512,10 @@ async def callback_handler(client: Client, query: CallbackQuery):
         )
     
     elif data == "set_cookies_btn":
+        if user_id not in Config.ADMIN_IDS:
+             await query.answer("Admin Only!", show_alert=True)
+             return
+
         # user_data[user_id] = {'state': 'waiting_cookies'}
 
         buttons = InlineKeyboardMarkup([
@@ -505,9 +575,12 @@ async def callback_handler(client: Client, query: CallbackQuery):
         buttons_list = [
             [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
             [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
-            [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
-            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
         ]
+
+        if user_id in Config.ADMIN_IDS:
+            buttons_list.append([InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")])
+
+        buttons_list.append([InlineKeyboardButton("🔙 Back", callback_data="close_settings")])
         if Config.CHANNEL_LINK:
             buttons_list.insert(3, [InlineKeyboardButton("📢 Update Channel", url=Config.CHANNEL_LINK)])
 
@@ -535,9 +608,12 @@ async def callback_handler(client: Client, query: CallbackQuery):
         buttons_list = [
             [InlineKeyboardButton(leech_btn_text, callback_data="toggle_leech")],
             [InlineKeyboardButton(thumb_btn_text, callback_data="toggle_thumb")],
-            [InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")],
-            [InlineKeyboardButton("🔙 Back", callback_data="close_settings")]
         ]
+
+        if user_id in Config.ADMIN_IDS:
+            buttons_list.append([InlineKeyboardButton("🍪 Set Cookies", callback_data="set_cookies_btn")])
+
+        buttons_list.append([InlineKeyboardButton("🔙 Back", callback_data="close_settings")])
         if Config.CHANNEL_LINK:
             buttons_list.insert(3, [InlineKeyboardButton("📢 Update Channel", url=Config.CHANNEL_LINK)])
 
@@ -711,6 +787,9 @@ async def callback_handler(client: Client, query: CallbackQuery):
 # Registered before generic text_handler to ensure priority
 @app.on_message(filters.regex(r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/"))
 async def youtube_handler(client: Client, message: Message):
+    if not await check_fsub(client, message):
+        return
+
     user_id = message.from_user.id
     
     # Extract URL
@@ -1131,6 +1210,21 @@ async def process_download(client: Client, message: Message, data: dict):
             return
         
         await status_msg.delete()
+
+        # Log to Log Channel
+        if Config.LOG_CHANNEL_ID:
+            try:
+                await client.send_message(
+                    Config.LOG_CHANNEL_ID,
+                    f"📥 **New Download**\n\n"
+                    f"👤 **User:** {mention}\n"
+                    f"🆔 **ID:** `{user_id}`\n"
+                    f"📛 **Username:** @{user.username if user and user.username else 'N/A'}\n"
+                    f"🔗 **URL:** {url}\n"
+                    f"📹 **Title:** {final_title}"
+                )
+            except Exception as e:
+                print(f"Log Error: {e}")
         
         # Delete the user's original link/message
         if original_msg_id:

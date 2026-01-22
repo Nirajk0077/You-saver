@@ -4,3 +4,4 @@ yt-dlp
 aiohttp
 playwright
 playwright-stealth
+motor
