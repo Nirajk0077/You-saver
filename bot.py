@@ -144,6 +144,11 @@ def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefi
         'quiet': True,
         'progress_hooks': [hook],
         'noplaylist': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web'],
+            }
+        }
     }
 
     if 'mp3' in quality:
@@ -423,18 +428,21 @@ async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
 
     # Database: Add User & Log
-    if await db.add_user(user_id):
-        if Config.LOG_CHANNEL_ID:
-            try:
-                await client.send_message(
-                    Config.LOG_CHANNEL_ID,
-                    f"📢 **New User Started Bot**\n\n"
-                    f"👤 **User:** {message.from_user.mention}\n"
-                    f"🆔 **ID:** `{user_id}`\n"
-                    f"📛 **Username:** @{message.from_user.username if message.from_user.username else 'N/A'}"
-                )
-            except Exception as e:
-                print(f"Log Error: {e}")
+    try:
+        if await db.add_user(user_id):
+            if Config.LOG_CHANNEL_ID:
+                try:
+                    await client.send_message(
+                        Config.LOG_CHANNEL_ID,
+                        f"📢 **New User Started Bot**\n\n"
+                        f"👤 **User:** {message.from_user.mention}\n"
+                        f"🆔 **ID:** `{user_id}`\n"
+                        f"📛 **Username:** @{message.from_user.username if message.from_user.username else 'N/A'}"
+                    )
+                except Exception as e:
+                    print(f"Log Error: {e}")
+    except Exception as e:
+        print(f"Database Error: {e}")
 
     leech_status = "✅ ON" if get_user_setting(user_id, 'leech', False) else "❌ OFF"
     
