@@ -181,7 +181,12 @@ def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefi
              # If quality is somehow invalid or not in list, fallback to best
             pass
 
-        format_str = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+        # Expanded format string to support vertical videos (Shorts) where height > width
+        # We check both height and width against the quality to ensure we capture 1080x1920 for 1080p request.
+        format_str = (
+            f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/'
+            f'bestvideo[width<={quality}]+bestaudio/best[width<={quality}]'
+        )
         ydl_opts['format'] = format_str
         ydl_opts['merge_output_format'] = 'mp4'
 
