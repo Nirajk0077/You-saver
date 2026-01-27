@@ -109,6 +109,11 @@ def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefi
         'quiet': True,
         'progress_hooks': [hook],
         'noplaylist': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web']
+            }
+        }
     }
 
     if 'mp3' in quality:
@@ -141,7 +146,7 @@ def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefi
              # If quality is somehow invalid or not in list, fallback to best
             pass
 
-        format_str = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+        format_str = f'bestvideo[width<={quality}]+bestaudio/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
         ydl_opts['format'] = format_str
         ydl_opts['merge_output_format'] = 'mp4'
 
@@ -158,6 +163,11 @@ def fetch_info_sync(url, cookiefile=None):
     ydl_opts = {
         'quiet': True,
         'noplaylist': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web']
+            }
+        }
     }
 
     if cookiefile and os.path.exists(cookiefile):
