@@ -146,7 +146,10 @@ def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefi
              # If quality is somehow invalid or not in list, fallback to best
             pass
 
-        format_str = f'bestvideo[width<={quality}]+bestaudio/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best[width<={quality}]'
+        # Added fallback to bestvideo+bestaudio and best to prevent "Requested format not available" errors
+        # when specific resolution constraints cannot be met (e.g. vertical videos, or limited available formats)
+        # Priority: Height check (Landscape) -> Width check (Portrait/Vertical) -> Fallbacks
+        format_str = f'bestvideo[height<={quality}]+bestaudio/bestvideo[width<={quality}]+bestaudio/best[height<={quality}]/best[width<={quality}]/bestvideo+bestaudio/best'
         ydl_opts['format'] = format_str
         ydl_opts['merge_output_format'] = 'mp4'
 
