@@ -146,7 +146,7 @@ def download_video_sync(url, output_path, quality, writethumbnail=True, cookiefi
              # If quality is somehow invalid or not in list, fallback to best
             pass
 
-        format_str = f'bestvideo[width<={quality}]+bestaudio/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]'
+        format_str = f'bestvideo[width<={quality}]+bestaudio/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best[width<={quality}]'
         ydl_opts['format'] = format_str
         ydl_opts['merge_output_format'] = 'mp4'
 
